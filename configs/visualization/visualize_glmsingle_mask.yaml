@@ -1,15 +1,33 @@
-# Configuration for GLMSingle mask visualization
+# ──────────────────────────────────────────────────────────────
+# Configuration for voxel-mask surface visualisation
+# See: cross_modal_neural_encoding/visualization/visualize_glmsingle_mask.py
+# ──────────────────────────────────────────────────────────────
 
-# Parent directory such as /glmsingle containing sub-* GLMSingle outputs (REQUIRED)
+# ── Mode ──────────────────────────────────────────────────────
+# "r2" – threshold by Type-A on/off R² (top-k %)
+# "ev" – threshold by explainable variance (absolute EV cutoffs)
+mode: "ev"
+
+# ── Paths (REQUIRED) ─────────────────────────────────────────
+# Parent directory containing sub-* GLMSingle outputs
 glmsingle_path: ""
 
-# Top-k % of voxels to keep (by R2) – one row per percentage in the figure
-# Override from CLI:  top_percentages='[5,10,20]'
-top_percentages:
+# BIDS dataset root (required for ev mode only)
+bids_root: ""
+
+# ── Thresholds ────────────────────────────────────────────────
+# Top-k percentages of positive surface vertices (one row per value).
+# Same interpretation for both r2 and ev modes.
+thresholds:
+  - 5
   - 10
   - 15
-  - 20
 
-# Optional: directory to save output figures (one per subject)
-# Default: reports/figures/
+# ── Experimental design (ev mode only) ───────────────────────
+sessions: [1, 2, 3]
+runs_per_session: 12
+task: "comp"
+
+# ── Output ────────────────────────────────────────────────────
+# Directory to save figures (default: reports/figures/)
 output_dir: null
