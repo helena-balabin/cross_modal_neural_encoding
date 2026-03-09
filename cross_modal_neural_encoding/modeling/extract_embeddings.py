@@ -329,7 +329,7 @@ _DTYPES: dict[str, torch.dtype] = {
 
 @hydra.main(
     version_base=None,
-    config_path="../../configs",
+    config_path="../../configs/modeling",
     config_name="extract_embeddings",
 )
 def main(cfg: DictConfig) -> None:
@@ -360,8 +360,10 @@ def main(cfg: DictConfig) -> None:
         ``"mean"`` or ``"last"`` – how to pool token-level hidden states.
     batch_size / max_length : int
         Batching and tokenizer settings for text extraction.
-    layers : list[int] | null
-        Layer indices to extract (``null`` = all).
+    vision_layers : list[int] | null
+        Vision-encoder layer indices to extract (``null`` = all).
+    text_layers : list[int] | null
+        Text-encoder layer indices to extract (``null`` = all).
     """
     # -- resolve paths (relative to project root) --------------------------
     metadata_path = Path(cfg.metadata_path)
@@ -377,8 +379,11 @@ def main(cfg: DictConfig) -> None:
     pooling: str = cfg.pooling
     batch_size: int = cfg.get("batch_size", 8)
     max_length: int = cfg.get("max_length", 512)
-    layer_indices: list[int] | None = (
-        list(cfg.layers) if cfg.get("layers") is not None else None
+    vision_layer_indices: list[int] | None = (
+        list(cfg.vision_layers) if cfg.get("vision_layers") is not None else None
+    )
+    text_layer_indices: list[int] | None = (
+        list(cfg.text_layers) if cfg.get("text_layers") is not None else None
     )
 
     # -- load metadata ------------------------------------------------------
@@ -454,7 +459,7 @@ def main(cfg: DictConfig) -> None:
             device=device,
             dtype=dtype,
             pooling=pooling,
-            layer_indices=layer_indices,
+            layer_indices=vision_layer_indices,
         )
         vis_embs = {k: v[broadcast] for k, v in vis_embs.items()}
         _save_embeddings(vis_embs, model_dir, "vision_embeddings", coco_ids)
@@ -468,7 +473,7 @@ def main(cfg: DictConfig) -> None:
             device=device,
             dtype=dtype,
             pooling=pooling,
-            layer_indices=layer_indices,
+            layer_indices=text_layer_indices,
             batch_size=batch_size,
             max_length=max_length,
         )

@@ -31,4 +31,5 @@ dtype: "bfloat16"               # float16 | bfloat16 | float32
 batch_size: 8                   # text-encoder batch size
 max_length: 512                 # max tokenizer length
 pooling: "mean"                 # mean | last  (over tokens / patches)
-layers: [-1]                    # null → all layers, or list e.g. [0, 6, 12, 18, 24]
+vision_layers: [6]              # null → all layers, or list e.g. [0, 6, 11]
+text_layers: [12]               # null → all layers, or list e.g. [0, 12, 23]
