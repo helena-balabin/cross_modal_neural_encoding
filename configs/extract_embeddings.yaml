@@ -1,0 +1,34 @@
+# ──────────────────────────────────────────────────────────────
+# Configuration for VLM embedding extraction
+# See: cross_modal_neural_encoding/modeling/extract_embeddings.py
+# ──────────────────────────────────────────────────────────────
+
+# HuggingFace model identifiers – add more entries to extract from
+# multiple VLMs in a single run.
+models:
+  - "Qwen/Qwen3.5-0.8B"
+
+# ── Data ──────────────────────────────────────────────────────
+# Paths are relative to the project root (or absolute).
+metadata_path: "data/coco_metadata/all_metadata_merged.csv"
+
+image_dir: "data/coco_images"           # directory containing COCO images
+image_filename_column: "filepath"       # CSV column with the image filename
+coco_id_column: "cocoid_x"              # CSV column with the COCO image ID (used as embedding key)
+text_column: "text"                     # CSV column with caption text
+
+# ── Output ────────────────────────────────────────────────────
+output_dir: "models/embeddings"
+
+# ── Downloads ─────────────────────────────────────────────────
+cache_dir: "cache"
+
+# ── Compute ───────────────────────────────────────────────────
+device: "cuda"
+dtype: "bfloat16"               # float16 | bfloat16 | float32
+
+# ── Extraction settings ──────────────────────────────────────
+batch_size: 8                   # text-encoder batch size
+max_length: 512                 # max tokenizer length
+pooling: "mean"                 # mean | last  (over tokens / patches)
+layers: [-1]                    # null → all layers, or list e.g. [0, 6, 12, 18, 24]
