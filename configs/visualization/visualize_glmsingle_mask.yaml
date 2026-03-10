@@ -5,7 +5,7 @@
 
 # ── Mode ──────────────────────────────────────────────────────
 # "r2" – threshold by Type-A on/off R² (top-k %)
-# "ev" – threshold by explainable variance (absolute EV cutoffs)
+# "ev" – threshold by explainable variance (top-k % of positive EV voxels)
 mode: "ev"
 
 # ── Paths (REQUIRED) ─────────────────────────────────────────

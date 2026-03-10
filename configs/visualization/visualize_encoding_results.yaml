@@ -1,0 +1,27 @@
+# ──────────────────────────────────────────────────────────────
+# Configuration for encoding-results bar chart visualisation
+# See: cross_modal_neural_encoding/visualization/visualize_encoding_results.py
+# ──────────────────────────────────────────────────────────────
+
+# ── Path to the aggregated CSV file (REQUIRED) ───────────────
+aggregated_csv: ""
+
+# ── Metric to plot as bars ────────────────────────────────────
+# Options: mean_r, median_r, mean_ev, median_ev,
+#          mean_normalized_r, median_normalized_r
+metric: "mean_r"
+
+# ── Column containing p-values for significance annotation ────
+# Should correspond to the chosen metric
+# Options: p_value_mean_r, p_value_median_r
+p_value_col: "p_value_mean_r"
+
+# ── Significance threshold ────────────────────────────────────
+alpha: 0.05
+
+# ── Output ────────────────────────────────────────────────────
+# Path to save figure (null = reports/figures/encoding_results.png)
+output_path: null
+
+# ── Figure size (width, height in inches) ─────────────────────
+figsize: [8, 5]

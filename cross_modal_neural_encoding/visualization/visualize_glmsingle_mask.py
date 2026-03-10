@@ -27,7 +27,6 @@ from loguru import logger
 from nilearn import datasets, image, surface
 from nilearn.plotting import plot_surf_stat_map
 from omegaconf import DictConfig
-from scipy.stats import zscore as _scipy_zscore
 
 from cross_modal_neural_encoding.config import FIGURES_DIR
 
@@ -97,9 +96,10 @@ def load_events(
     modality_column: str = "modality",
     cocoid_column: str = "cocoid",
 ) -> pd.DataFrame:
-    """Parse BIDS events files → DataFrame(beta_index, cocoid, modality)."""
+    """Parse BIDS events files → DataFrame(beta_index, cocoid, modality, run_label)."""
     records: list[dict] = []
     beta_idx = 0
+    run_counter = 0  # global run index across all sessions
 
     for ses in sessions:
         for run in range(1, runs_per_session + 1):
@@ -118,16 +118,48 @@ def load_events(
                 if pd.isna(cid) or str(cid).strip().lower() == "n/a":
                     continue
                 records.append(
-                    {"beta_index": beta_idx, "cocoid": int(float(cid)), "modality": mod}
+                    {"beta_index": beta_idx, "cocoid": int(float(cid)), "modality": mod, "run_label": run_counter}
                 )
                 beta_idx += 1
+
+            run_counter += 1
 
     return pd.DataFrame(records)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Explainable variance (all modalities combined)
-# ═══════════════════════════════════════════════════════════════════════════
+def zscore_betas_per_run(
+    betas_flat: np.ndarray,
+    events_df: pd.DataFrame,
+) -> np.ndarray:
+    """Z-score betas within each run (across trials, per voxel).
+
+    For each run, every voxel's response is independently centred and
+    scaled across the trials in that run.  This removes each voxel's
+    run-specific mean and variance, preventing run-level offsets from
+    inflating between-run variance.
+
+    Parameters
+    ----------
+    betas_flat : (n_voxels, n_trials)
+    events_df : must contain ``beta_index`` and ``run_label`` columns.
+
+    Returns
+    -------
+    betas_z : (n_voxels, n_trials) – z-scored copy.
+    """
+    betas_z = betas_flat.copy().astype(np.float64)
+
+    for _, group in events_df.groupby("run_label"):
+        idx = np.asarray(group["beta_index"].values, dtype=int)
+        run_data = betas_z[:, idx]  # (n_voxels, n_trials_in_run)
+        mu = run_data.mean(axis=1, keepdims=True)
+        sd = run_data.std(axis=1, keepdims=True, ddof=0)
+        sd[sd == 0] = 1.0  # avoid division by zero for constant voxels
+        betas_z[:, idx] = (run_data - mu) / sd
+
+    n_runs = events_df["run_label"].nunique()
+    logger.info(f"  Z-scored betas within {n_runs} runs")
+    return betas_z
 
 
 def _compute_ev_single_modality(
@@ -137,9 +169,14 @@ def _compute_ev_single_modality(
 ) -> np.ndarray:
     """Compute per-voxel EV for one stimulus modality.
 
+    Betas are expected to have been z-scored per run (across trials,
+    per voxel) before calling this function.  No additional z-scoring
+    is applied here so that the variance structure is preserved for
+    the VEM ratio.
+
     Parameters
     ----------
-    betas_flat : (n_voxels, n_all_trials)
+    betas_flat : (n_voxels, n_all_trials) – per-run z-scored betas.
     events_df : table with ``beta_index``, ``cocoid``, ``modality``.
     modality_filter : ``"image"`` or ``"text"``.
 
@@ -153,6 +190,19 @@ def _compute_ev_single_modality(
     grouped = mod_df.groupby("cocoid")
     group_sizes = grouped.size()
     n_repeats = int(group_sizes.mode().iloc[0])
+
+    # Warn if many stimuli don't match the modal repeat count
+    n_excluded = int((group_sizes != n_repeats).sum())
+    if n_excluded > 0:
+        logger.warning(
+            f"  EV ({modality_filter}): dropping {n_excluded} stimuli "
+            f"with != {n_repeats} repeats (possibly missing runs)"
+        )
+    if n_repeats < 2:
+        raise ValueError(
+            f"Need ≥ 2 repeats to compute EV, got {n_repeats} "
+            f"for modality '{modality_filter}'. Check events files."
+        )
 
     valid_cids = group_sizes[group_sizes == n_repeats].index
     valid_df = mod_df[mod_df["cocoid"].isin(valid_cids)]
@@ -168,10 +218,6 @@ def _compute_ev_single_modality(
     for i, (_, group) in enumerate(valid_grouped):
         indices = group["beta_index"].values.astype(int)
         data[:, i, :] = betas_flat[:, indices].T  # type: ignore[index]
-
-    # Z-score across stimuli within each repeat
-    data = np.asarray(_scipy_zscore(data, axis=1, nan_policy="omit"))
-    data = np.nan_to_num(data, nan=0.0)
 
     mean_var = data.var(axis=1, dtype=np.float64, ddof=1).mean(axis=0)
     var_mean = data.mean(axis=0).var(axis=0, dtype=np.float64, ddof=1)
@@ -190,6 +236,9 @@ def compute_ev_3d(
 ) -> np.ndarray:
     """Compute per-voxel EV separately for each modality, then take the max.
 
+    Betas are first z-scored within each run to remove run-level
+    mean/scale differences before computing EV.
+
     Image and text trials evoke different BOLD responses, so EV must
     be computed within-modality (6 image repeats and 6 text repeats
     separately).  The two maps are then combined by taking the
@@ -202,6 +251,9 @@ def compute_ev_3d(
     """
     vol_shape = betas_4d.shape[:3]
     betas_flat = betas_4d.reshape(-1, betas_4d.shape[-1])
+
+    # Z-score betas within each run before computing EV
+    betas_flat = zscore_betas_per_run(betas_flat, events_df)
 
     modalities = sorted(events_df["modality"].unique())
     logger.info(f"  Computing EV per modality: {modalities}")
@@ -392,7 +444,7 @@ def main(cfg: DictConfig) -> None:
     mode : str             – ``"r2"`` or ``"ev"``
     glmsingle_path : str   (required) – parent dir with sub-* GLMsingle outputs
     thresholds : list      – top-k percentages (e.g. [5, 10, 15]);
-                             same interpretation for both modes.
+                            same interpretation for both modes.
     bids_root : str        – BIDS root (required for ev mode)
     sessions, runs_per_session, task – experiment parameters (ev mode)
     output_dir : str|null  – output directory (default: reports/figures/)

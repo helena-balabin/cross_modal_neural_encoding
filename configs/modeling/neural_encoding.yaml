@@ -1,0 +1,82 @@
+# ──────────────────────────────────────────────────────────────
+# Configuration for neural encoding analysis
+# See: cross_modal_neural_encoding/modeling/neural_encoding.py
+# ──────────────────────────────────────────────────────────────
+
+# ── Subjects ──────────────────────────────────────────────────
+subjects:
+  - "sub-02"
+  - "sub-03"
+  - "sub-04"
+  - "sub-05"
+  - "sub-06"
+  - "sub-07"
+  - "sub-08"
+  - "sub-09"
+
+# ── Experimental design ──────────────────────────────────────
+sessions: [1, 2, 3]
+runs_per_session: 12
+task: "comp"
+
+# ── Paths ─────────────────────────────────────────────────────
+bids_root: ""  # must be provided
+glmsingle_root: ""  # must be provided
+embeddings_dir: "models/embeddings"         # relative to project root
+output_dir: "outputs/neural_encoding"       # relative to project root
+
+# ── VLM model & layer ────────────────────────────────────────
+model: "Qwen/Qwen3.5-0.8B"
+# Vision encoder: 12 layers (0-11).  Text encoder: 24 layers (0-23).
+# Intermediate layers often capture more brain-aligned representations
+# than the final layer.  Try: vision ~6, text ~12.
+vision_layer: 6
+text_layer: 12
+
+# ── Voxel selection (Explainable Variance) ───────────────────
+# Keep the top-k % of positive-EV voxels (e.g. 20 → top 20 %).
+# EV is computed from repeated presentations, following the VEM
+# framework (Dupré la Tour et al., 2025; Sahani & Linden, 2002).
+# √EV is the noise ceiling for r.
+ev_top_percentage: 20
+
+# ── PCA on embeddings ────────────────────────────────────────
+n_pca_components: 20
+
+# ── Ridge regression ─────────────────────────────────────────
+# Gallant-lab style (gallantlab/voxelwise_tutorials):
+#   - Single train/test split by stimulus identity (GroupShuffleSplit).
+#   - Group-aware inner CV (GroupKFold) for per-voxel alpha selection.
+#   - Wide logarithmic alpha grid → np.logspace(alpha_log_min, alpha_log_max, n_alphas)
+test_size: 0.2            # fraction of stimuli held out for testing
+n_inner_folds: 5          # inner GroupKFold folds for alpha tuning
+alpha_log_min: 1
+alpha_log_max: 20
+n_alphas: 20
+
+# ── Permutation test ─────────────────────────────────────────
+# Number of permutations (shuffle embedding <-> stimulus mapping).
+# Set to 0 to skip.  100 gives a rough estimate; 1000+ for
+# publication-quality p-values.
+n_permutations: 100
+
+# ── Events file columns ─────────────────────────────────────
+modality_column: "modality"
+cocoid_column: "cocoid"
+
+# ── Encoding conditions ──────────────────────────────────────
+# embed_modality: "vision" or "text"  (matches embeddings dir name)
+# fmri_modality:  "image"  or "text"  (matches events modality value)
+conditions:
+  text_to_text:
+    embed_modality: "text"
+    fmri_modality: "text"
+  image_to_image:
+    embed_modality: "vision"
+    fmri_modality: "image"
+  image_to_text:
+    embed_modality: "vision"
+    fmri_modality: "text"
+  text_to_image:
+    embed_modality: "text"
+    fmri_modality: "image"
