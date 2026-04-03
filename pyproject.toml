@@ -16,6 +16,7 @@ classifiers = [
     "License :: OSI Approved :: MIT License"
 ]
 dependencies = [
+    "ants>=0.0.7",
     "datasets>=4.6.1",
     "dotenv>=0.9.9",
     "himalaya>=0.4.11",
