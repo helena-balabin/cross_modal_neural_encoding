@@ -1,0 +1,50 @@
+# ──────────────────────────────────────────────────────────────
+# Configuration for Noise Ceiling Surface Visualization
+# See: cross_modal_neural_encoding/visualization/visualize_noise_ceiling.py
+# ──────────────────────────────────────────────────────────────
+
+# ── Data Directories (REQUIRED) ───────────────────────────────
+# Path to GLMsingle output directory containing subject subdirectories
+glmsingle_dir: "/project/def-afyshe-ab/hbalabin/comp_fmri_study_2025/glmsingle"
+
+# Path to BIDS dataset root
+bids_dir: "/project/def-afyshe-ab/hbalabin/comp_fmri_study_2025/bids"
+
+# Path to fMRIprep outputs
+fmriprep_dir: "/project/def-afyshe-ab/hbalabin/comp_fmri_study_2025/fmriprep"
+
+# Path to design matrix mapping CSV (condition index to modality: text/image)
+# Required for per-modality analysis. CSV format: design_matrix_idx,coco_id
+# Example: design_matrix_mapping.csv with columns:
+#   design_matrix_idx,coco_id
+#   0,260_text
+#   1,1014_text
+#   252,260_image
+#   ...
+design_matrix_mapping_file: "/project/def-afyshe-ab/hbalabin/comp_fmri_study_2025/coco/coco_252_stimuli_local/design_matrix_mapping.csv"
+
+# ── Subject ──────────────────────────────
+# Subject identifier (e.g., "sub-01", "sub-02", etc.)
+subject: null
+
+# ── Analysis Parameters ───────────────────────────────────────
+# Percentiles of noise ceiling to visualize (top N%)
+percentiles: [10, 20, 30]
+
+# Brain hemispheres to visualize
+# Options: ["left"], ["right"], or ["left", "right"]
+hemispheres: ["left", "right"]
+
+# ── Output Configuration ──────────────────────────────────────
+# Output directory for figures and data
+# Defaults to reports/figures/noise_ceiling if not specified
+output_dir: null
+
+# ── Colormaps ─────────────────────────────────────────────────
+# Colormap for surface plots
+# Options: "viridis", "hot", "cool", "RdYlBu_r", "jet", etc.
+cmap: "hot"
+
+# ── Verbosity ─────────────────────────────────────────────────
+# Log level: DEBUG, INFO, WARNING, ERROR
+log_level: "INFO"
