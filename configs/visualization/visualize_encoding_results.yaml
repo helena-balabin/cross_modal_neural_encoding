@@ -4,24 +4,55 @@
 # ──────────────────────────────────────────────────────────────
 
 # ── Path to the aggregated CSV file (REQUIRED) ───────────────
+# Used when run_dir is null.
 aggregated_csv: ""
+
+# ── Optional run directory with model subfolders ──────────────
+# Example: outputs/neural_encoding/run_array_4689639
+# If set, the script scans each immediate subfolder for aggregated.csv
+# and plots one row per model with available results.
+run_dir: null
+
+# ── Optional path to per-subject summary CSV ──────────────────
+# If null/empty, script will try to infer it as sibling of aggregated_csv
+# (same directory, file name "summary.csv").
+summary_csv: null
 
 # ── Metric to plot as bars ────────────────────────────────────
 # Options: mean_r, median_r, mean_ev, median_ev,
 #          mean_normalized_r, median_normalized_r
-metric: "mean_r"
+metric: "mean_normalized_r"
 
 # ── Column containing p-values for significance annotation ────
-# Should correspond to the chosen metric
-# Options: p_value_mean_r, p_value_median_r
-p_value_col: "p_value_mean_r"
+# Used for significance labels on bars (including per-subject panel).
+# Current modeling output provides: p_value_mean_r
+p_value_col: "p_value_mean_r" 
 
 # ── Significance threshold ────────────────────────────────────
 alpha: 0.05
+
+# ── Group-level significance for aggregate bars ───────────────
+# If true, stars on the group bars are computed from subject-level
+# metric values via one-sample sign-flip permutation test (H1: mean > 0),
+# instead of using averaged per-subject p-values from aggregated.csv.
+use_group_level_significance: true
+group_sig_permutations: 10000
+group_sig_random_state: 42
 
 # ── Output ────────────────────────────────────────────────────
 # Path to save figure (null = reports/figures/encoding_results.png)
 output_path: null
 
+# ── Include panel with subject-level trajectories ─────────────
+show_subject_panel: true
+
+# ── Text sizing (multiplier over base plot fonts) ─────────────
+font_scale: 1.2
+
+# ── Compress normalized y-axis to reduce empty middle space ───
+# Uses symlog scaling when metric contains "normalized".
+compress_normalized_axis: false
+normalized_axis_linthresh: 0.08
+
 # ── Figure size (width, height in inches) ─────────────────────
-figsize: [8, 5]
+figsize: [10, 3.6]
