@@ -11,184 +11,32 @@ Usage::
 
 from __future__ import annotations
 
-from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
 import hydra
 import nibabel as nib
 import numpy as np
-import pandas as pd
 from loguru import logger
 from nilearn import surface, plotting
 from omegaconf import DictConfig
-from PIL import Image
-import matplotlib.pyplot as plt
 
 from cross_modal_neural_encoding.config import FIGURES_DIR
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Noise Ceiling Computation
-# ═══════════════════════════════════════════════════════════════════════════
-
-
-def compute_ncsnr(
-    betas: np.ndarray,
-    stimulus_ids: np.ndarray,
-) -> np.ndarray:
-    """
-    Computes the noise ceiling signal to noise ratio.
-
-    Parameters
-    ----------
-    betas : np.ndarray
-        Array of betas or other neural data with shape (num_betas, num_voxels)
-    stimulus_ids : np.ndarray
-        Array that specifies the stimulus that betas correspond to, shape (num_betas)
-
-    Returns
-    -------
-    np.ndarray
-        Array of noise ceiling snr values with shape (num_voxels)
-    """
-    unique_ids = np.unique(stimulus_ids)
-
-    betas_var = []
-    for i in unique_ids:
-        stimulus_betas = betas[stimulus_ids == i]
-        betas_var.append(stimulus_betas.var(axis=0, ddof=1))
-    betas_var_mean = np.nanmean(np.stack(betas_var), axis=0)
-
-    std_noise = np.sqrt(betas_var_mean)
-
-    std_signal = 1.0 - betas_var_mean
-    std_signal[std_signal < 0.0] = 0.0
-    std_signal = np.sqrt(std_signal)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        ncsnr = std_signal / std_noise
-    return ncsnr
-
-
-def compute_nc(ncsnr: np.ndarray, num_averages: int = 1) -> np.ndarray:
-    """
-    Convert the noise ceiling snr to the actual noise ceiling estimate.
-
-    Parameters
-    ----------
-    ncsnr : np.ndarray
-        Array of noise ceiling snr values with shape (num_voxels)
-    num_averages : int
-        Set to the number of repetitions that will be averaged together.
-        If there are repetitions that won't be averaged, then leave this as 1
-
-    Returns
-    -------
-    np.ndarray
-        Array of noise ceiling values with shape (num_voxels)
-    """
-    ncsnr_squared = ncsnr**2
-    with np.errstate(divide="ignore", invalid="ignore"):
-        nc = 100.0 * ncsnr_squared / (ncsnr_squared + (1.0 / num_averages))
-    return nc
-
-
-def load_design_matrix_mapping(design_mapping_file: Path) -> dict[int, str]:
-    """
-    Load design matrix mapping CSV and create condition index to modality mapping.
-
-    Parameters
-    ----------
-    design_mapping_file : Path
-        Path to design_matrix_mapping.csv file with columns: design_matrix_idx, coco_id
-        where coco_id format is "{id}_text" or "{id}_image"
-
-    Returns
-    -------
-    dict
-        Mapping from condition index (int) to modality (str: 'text' or 'image')
-    """
-    df = pd.read_csv(design_mapping_file)
-    modality_map = {}
-    
-    for _, row in df.iterrows():
-        idx = int(row['design_matrix_idx'])
-        coco_id = str(row['coco_id'])
-        
-        if coco_id.endswith('_text'):
-            modality_map[idx] = 'text'
-        else:
-            modality_map[idx] = 'image'
-    
-    logger.info(f"Loaded mapping for {len(modality_map)} conditions")
-    text_count = sum(1 for m in modality_map.values() if m == 'text')
-    image_count = sum(1 for m in modality_map.values() if m == 'image')
-    logger.info(f"  Text conditions: {text_count}, Image conditions: {image_count}")
-    
-    return modality_map
-
-
-def compute_nc_by_modality(
-    betas: np.ndarray,
-    stimulus_ids: np.ndarray,
-    modality_map: dict[int, str],
-) -> dict[str, np.ndarray]:
-    """
-    Compute noise ceiling separately for each modality (text vs image).
-
-    Parameters
-    ----------
-    betas : np.ndarray
-        Array of betas with shape (num_betas, num_voxels)
-    stimulus_ids : np.ndarray
-        Array specifying stimulus condition for each beta, shape (num_betas)
-    modality_map : dict
-        Mapping from condition index to modality ('text' or 'image')
-
-    Returns
-    -------
-    dict
-        Dictionary with keys 'text' and 'image', each containing NC array (num_voxels,)
-    """
-    nc_by_modality = {}
-    
-    # Ensure stimulus_ids is a 1D integer array
-    stimulus_ids = np.asarray(stimulus_ids, dtype=np.int64).flatten()
-    
-    for modality in ['text', 'image']:
-        # Find indices of trials for this modality by mapping each stimulus ID
-        trial_modalities = []
-        for stim_id in stimulus_ids:
-            stim_id_int = int(stim_id)
-            trial_modalities.append(modality_map.get(stim_id_int, 'unknown'))
-        trial_modalities = np.array(trial_modalities)
-        modality_mask = trial_modalities == modality
-        
-        # Get betas and stimulus IDs for this modality
-        modality_betas = betas[modality_mask]
-        modality_stim_ids = stimulus_ids[modality_mask].astype(np.int64)
-        
-        logger.info(f"{modality.capitalize()}: {len(modality_betas)} trials, {len(np.unique(modality_stim_ids))} unique stimuli")
-        
-        # Compute noise ceiling for this modality
-        ncsnr = compute_ncsnr(modality_betas, modality_stim_ids)
-        nc = compute_nc(ncsnr, num_averages=1)
-        nc_by_modality[modality] = nc
-    
-    return nc_by_modality
+from cross_modal_neural_encoding.utils import (
+    compute_nc,
+    compute_nc_by_modality,
+    compute_ncsnr,
+    load_design_matrix_mapping,
+    normalize_betas_per_run,
+    _find_subdir,
+    get_affine,
+    load_brain_mask,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Data Loading and Processing
 # ═══════════════════════════════════════════════════════════════════════════
-
-
-def _find_subdir(subject_dir: Path, subdir: str) -> list[Path]:
-    """Find session or subject-level subdirectories. Consolidates repeated logic."""
-    dirs = sorted(subject_dir.glob(f"ses-*/{subdir}"))
-    if not dirs and (subject_dir / subdir).exists():
-        dirs = [subject_dir / subdir]
-    return dirs
 
 
 def load_glmsingle_betas(
@@ -225,8 +73,7 @@ def load_glmsingle_betas(
 def load_all_runs(
     glmsingle_dir: Path, subject: str
 ) -> tuple[np.ndarray, np.ndarray, tuple[int, int, int]]:
-    """
-    Load GLMsingle betas for a subject.
+    """Load GLMsingle betas and normalize within runs.
 
     Parameters
     ----------
@@ -238,7 +85,8 @@ def load_all_runs(
     Returns
     -------
     tuple
-        (all_betas, all_stimulus_ids, spatial_dims)
+        (all_betas, all_stimulus_ids, spatial_dims) with betas normalized
+        per run.
     """
     logger.info(f"Processing {subject}")
     betas, stimulus_ids, spatial_dims = load_glmsingle_betas(glmsingle_dir, subject)
@@ -252,29 +100,9 @@ def load_all_runs(
     else:
         num_runs = 36  # Default based on typical GLMsingle outputs
 
-    num_conditions = betas.shape[0]
-    num_voxels = betas.shape[1]
-    conditions_per_run = num_conditions // num_runs
+    # Use shared normalization function
+    betas = normalize_betas_per_run(betas, num_runs=num_runs)
 
-    logger.info(f"Reshaping {num_conditions} conditions into {num_runs} runs × {conditions_per_run} conditions/run")
-
-    # Reshape to (num_runs, conditions_per_run, num_voxels) for per-run normalization
-    betas_runs = betas.reshape(num_runs, conditions_per_run, num_voxels)
-
-    # Normalize within each run using all trials (all 42 trials per run are valid stimuli)
-    betas_normalized = np.zeros_like(betas_runs)
-    for run_idx in range(num_runs):
-        run_betas = betas_runs[run_idx]
-        
-        # Compute per-run statistics using all trials
-        mean = np.mean(run_betas, axis=0)
-        std = np.std(run_betas, axis=0)
-        std[std == 0] = 1.0  # Avoid division by zero
-        betas_normalized[run_idx] = (run_betas - mean) / std
-
-    # Reshape back to (num_conditions, num_voxels)
-    betas = betas_normalized.reshape(num_conditions, num_voxels)
-    
     # Flatten stimulus_ids to ensure it's 1D (matching betas first dimension)
     stimulus_ids = np.asarray(stimulus_ids).flatten()
 
@@ -284,41 +112,6 @@ def load_all_runs(
 # ═══════════════════════════════════════════════════════════════════════════
 # Surface Extraction and Plotting
 # ═══════════════════════════════════════════════════════════════════════════
-
-
-def get_affine(fmriprep_dir: Path, subject: str) -> np.ndarray:
-    """Get affine from fMRIPrep native T1w space BOLD.
-    
-    CRITICAL: Explicitly loads T1w (subject-native) space BOLD to guarantee native anatomy.
-    fMRIPrep outputs both space-T1w (native) and space-MNI152NLin2009cAsym files - must filter for T1w.
-    """
-    # EXPLICITLY filter for space-T1w (native) - find first session/func dir
-    subject_dir = fmriprep_dir / subject
-    func_dirs = _find_subdir(subject_dir, "func")
-    # Get T1w BOLD files from first func directory
-    bold_files = list(func_dirs[0].glob("*space-T1w*desc-preproc_bold.nii.gz"))
-    # Load affine from first T1w BOLD file
-    affine = np.asarray(nib.load(str(bold_files[0])).affine)  # type: ignore
-    logger.info(f"Loaded affine from fMRIPrep T1w (native) space: {bold_files[0].name}")
-    return affine
-
-
-def load_brain_mask(
-    fmriprep_dir: Path, subject: str
-) -> np.ndarray:
-    """Load brain mask from fMRIPrep outputs and resample to GLMsingle dimensions."""
-    subject_dir = fmriprep_dir / subject
-    func_dirs = _find_subdir(subject_dir, "func")
-
-    # Find mask file
-    mask_files = [f for d in func_dirs for f in d.glob("*space-T1w*_desc-brain_mask.nii.gz")]
-    
-    # Load mask
-    mask_img = nib.load(mask_files[0])
-    mask_data = np.asarray(mask_img.get_fdata(), dtype=bool)  # type: ignore
-
-    logger.info(f"Brain mask: {int(np.asarray(mask_data).sum())} voxels")
-    return np.asarray(mask_data, dtype=bool)  # type: ignore
 
 
 def load_native_surfaces(fmriprep_dir: Path, subject: str) -> dict:
@@ -406,6 +199,7 @@ def _plot_modality_row(
     percentiles: list[int], fsaverage_meshes: dict, sulc_data: dict, cmap: str
 ) -> None:
     """Helper: Plot one modality row across all percentiles into provided 3D axes."""
+    hemi = "left" if "left" in hemisphere.lower() else "right"
     for col, percentile in enumerate(percentiles):
         data = surface_data[hemisphere].copy()
         threshold = np.nanpercentile(data, 100 - percentile)
@@ -418,6 +212,7 @@ def _plot_modality_row(
             bg_map=sulc_data[hemisphere],
             vmin=threshold, vmax=np.nanmax(data),
             cmap=cmap,
+            hemi=hemi,
             view="lateral",
             colorbar=False,
             axes=axes_row[col],
