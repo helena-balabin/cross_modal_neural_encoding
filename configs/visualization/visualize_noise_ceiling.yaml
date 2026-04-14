@@ -31,6 +31,10 @@ subject: null
 # Percentiles of noise ceiling to visualize (top N%)
 percentiles: [10, 20, 30]
 
+# Number of repetitions assumed averaged when converting NCSNR -> NC.
+# Use 6 to match six-repeat averaging.
+nc_num_averages: 6
+
 # Brain hemispheres to visualize
 # Options: ["left"], ["right"], or ["left", "right"]
 hemispheres: ["left", "right"]

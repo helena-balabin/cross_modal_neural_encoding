@@ -45,6 +45,10 @@ n_pca_components: 50
 # (DESIGNINFO stimorder + design_matrix_mapping_file).
 nc_top_percent: 20
 
+# Number of repetitions assumed averaged when converting NCSNR -> NC.
+# Use 6 to match test-time averaging across six repeats per stimulus.
+nc_num_averages: 6
+
 # ── Fractional ridge regression ──────────────────────────────
 test_size: 0.2           # test set fraction for outer CV (if n_outer_folds = 1)
 n_inner_folds: 5          # inner GroupKFold folds for frac tuning
@@ -56,6 +60,13 @@ frac_grid: [0.1, 0.25, 0.5, 0.75, 1.0]
 # Set to 0 to skip.  100 gives a rough estimate; 1000+ for
 # publication-quality p-values.
 n_permutations: 100
+# Parallel workers for permutations.
+# - Set >0 to force an exact worker count.
+# - Set 0 to auto-detect from CPU allocation and reserve some cores.
+n_jobs_permutations: 0
+# Used only when n_jobs_permutations=0.
+# Recommended on SLURM: reserve 4-8 cores for orchestration/overhead.
+permutation_cpu_reserve: 8
 
 # ── Events file columns ─────────────────────────────────────
 modality_column: "modality"

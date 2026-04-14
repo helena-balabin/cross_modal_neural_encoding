@@ -354,6 +354,8 @@ def main(cfg: DictConfig) -> None:
     
     logger.info(f"Processing {len(subject_dirs)} subjects: {[d.name for d in subject_dirs]}")
 
+    nc_num_averages = float(cfg.get("nc_num_averages", 6))
+
     for subject_dir in subject_dirs:
         subject = subject_dir.name
         logger.info(f"\n{'='*60}")
@@ -384,7 +386,7 @@ def main(cfg: DictConfig) -> None:
 
         # Convert to noise ceiling percentage
         logger.info("Converting to noise ceiling percentage...")
-        nc = compute_nc(ncsnr, num_averages=1)
+        nc = compute_nc(ncsnr, num_averages=nc_num_averages)
         logger.info(f"Noise ceiling range: [{np.nanmin(nc):.1f}, {np.nanmax(nc):.1f}]%")
 
         # Apply brain mask: set out-of-brain voxels to NaN
@@ -414,7 +416,12 @@ def main(cfg: DictConfig) -> None:
         modality_map = load_design_matrix_mapping(design_mapping_file)
         
         # Compute NC for each modality
-        nc_by_modality = compute_nc_by_modality(betas, stimulus_ids, modality_map)
+        nc_by_modality = compute_nc_by_modality(
+            betas,
+            stimulus_ids,
+            modality_map,
+            num_averages=nc_num_averages,
+        )
         
         # Apply brain mask to each modality
         for modality in ['text', 'image']:

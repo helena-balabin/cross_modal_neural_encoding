@@ -47,12 +47,14 @@ Hydra config: ``configs/neural_encoding.yaml``
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import hydra
 import numpy as np
 import pandas as pd
 from fracridge import FracRidgeRegressor
+from joblib import Parallel, delayed
 from loguru import logger
 from omegaconf import DictConfig, OmegaConf
 from sklearn.decomposition import PCA
@@ -659,6 +661,7 @@ def run_permutation_test(
     noise_ceiling: np.ndarray | None = None,
     n_permutations: int = 100,
     random_state: int = 42,
+    n_jobs: int = 1,
     real_result: dict,
 ) -> dict:
     """Permutation test for the encoding model.
@@ -680,6 +683,9 @@ def run_permutation_test(
         Number of random shuffles (default 100).
     random_state : int
         Seed for the permutation RNG.
+    n_jobs : int
+        Number of parallel CPU workers for permutations. Use 1 for
+        sequential execution.
     real_result : dict
         Result dict returned by the real (un-shuffled) ``run_encoding``
         call; used to place the observed *r* in the null distribution.
@@ -688,13 +694,17 @@ def run_permutation_test(
     -------
     dict with keys ``null_mean_r``, ``p_value_mean_r``.
     """
-    rng = np.random.default_rng(random_state)
-    null_mean_r = np.zeros(n_permutations, dtype=np.float64)
+    seed_rng = np.random.default_rng(random_state)
+    perm_seeds = seed_rng.integers(
+        0,
+        np.iinfo(np.int64).max,
+        size=n_permutations,
+        dtype=np.int64,
+    )
 
-    for i in tqdm(
-        range(n_permutations), desc="        Permutations", leave=False
-    ):
-        # Shuffle embeddings across stimuli, breaking the X <-> Y mapping
+    def _run_single_permutation(seed: int) -> float:
+        # Shuffle embeddings across stimuli, breaking the X <-> Y mapping.
+        rng = np.random.default_rng(int(seed))
         perm_idx = rng.permutation(X.shape[0])
         X_perm = X[perm_idx]
 
@@ -710,7 +720,23 @@ def run_permutation_test(
             random_state=random_state,  # same split for fair comparison
             verbose=False,
         )
-        null_mean_r[i] = perm_res["mean_r"]
+        return float(perm_res["mean_r"])
+
+    n_jobs = int(n_jobs)
+    if n_jobs > 1 and n_permutations > 1:
+        logger.info(f"      Running permutations in parallel (n_jobs={n_jobs}).")
+        null_mean_r = np.asarray(
+            Parallel(n_jobs=n_jobs, backend="loky", pre_dispatch="2*n_jobs")(
+                delayed(_run_single_permutation)(int(seed)) for seed in perm_seeds
+            ),
+            dtype=np.float64,
+        )
+    else:
+        null_mean_r = np.zeros(n_permutations, dtype=np.float64)
+        for i, seed in enumerate(
+            tqdm(perm_seeds, desc="        Permutations", leave=False)
+        ):
+            null_mean_r[i] = _run_single_permutation(int(seed))
 
     # p-values (Phipson & Smyth, 2010)
     real_mean = real_result["mean_r"]
@@ -762,15 +788,30 @@ def main(cfg: DictConfig) -> None:
     n_outer_folds: int = int(cfg.get("n_outer_folds", 1))
     test_size: float = cfg.test_size
     nc_top_percent: float = float(cfg.get("nc_top_percent", 0.0))
+    nc_num_averages: float = float(cfg.get("nc_num_averages", 6))
     design_matrix_mapping_file = Path(cfg.get("design_matrix_mapping_file", ""))
     frac_grid: np.ndarray = np.asarray(
         cfg.get("frac_grid", np.arange(0.1, 1.1, 0.1)),
         dtype="float32",
     )
     n_permutations: int = cfg.get("n_permutations", 0)
+    n_jobs_permutations: int = int(cfg.get("n_jobs_permutations", 1))
+    permutation_cpu_reserve: int = int(cfg.get("permutation_cpu_reserve", 2))
     sessions: list[int] = list(cfg.sessions)
     runs_per_session: int = cfg.runs_per_session
     conditions: dict = OmegaConf.to_container(cfg.conditions, resolve=True)  # type: ignore[assignment]
+
+    # Optional auto worker selection for permutation test.
+    if n_jobs_permutations <= 0:
+        slurm_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", "0") or 0)
+        visible_cpus = os.cpu_count() or 1
+        available_cpus = slurm_cpus if slurm_cpus > 0 else visible_cpus
+        n_jobs_permutations = max(1, available_cpus - permutation_cpu_reserve)
+        logger.info(
+            "Permutation workers auto-set from available CPUs: "
+            f"available={available_cpus}, reserve={permutation_cpu_reserve}, "
+            f"n_jobs_permutations={n_jobs_permutations}"
+        )
 
     # -- load & PCA embeddings (shared across subjects) ----------------------
     logger.info("Loading VLM embeddings …")
@@ -845,6 +886,7 @@ def main(cfg: DictConfig) -> None:
             betas_full_trials,
             stimulus_ids,
             modality_map,
+            num_averages=nc_num_averages,
         )
         nc_corr_by_modality_full = {
             m: np.sqrt(np.clip(v, 0, None) / 100.0)
@@ -1011,6 +1053,7 @@ def main(cfg: DictConfig) -> None:
                     n_outer_folds=n_outer_folds,
                     noise_ceiling=noise_ceiling_r,
                     n_permutations=n_permutations,
+                    n_jobs=n_jobs_permutations,
                     real_result=result,
                 )
 

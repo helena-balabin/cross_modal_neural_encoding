@@ -86,6 +86,7 @@ def compute_nc_by_modality(
     betas: np.ndarray,
     stimulus_ids: np.ndarray,
     modality_map: dict[int, str],
+    num_averages: int | float = 6,
 ) -> dict[str, np.ndarray]:
     """Compute noise ceiling separately for each modality (text vs image).
 
@@ -97,6 +98,9 @@ def compute_nc_by_modality(
         Array specifying stimulus condition for each beta, shape (num_betas).
     modality_map : dict
         Mapping from condition index (int) to modality (str: 'text' or 'image').
+    num_averages : int | float, optional
+        Number of repetitions assumed to be averaged in the target response
+        when converting NCSNR to NC (default 6).
 
     Returns
     -------
@@ -129,7 +133,7 @@ def compute_nc_by_modality(
 
         # Compute noise ceiling for this modality
         ncsnr = compute_ncsnr(modality_betas, modality_stim_ids)
-        nc = compute_nc(ncsnr, num_averages=1)
+        nc = compute_nc(ncsnr, num_averages=num_averages)
         nc_by_modality[modality] = nc
 
     return nc_by_modality
