@@ -5,12 +5,12 @@
 
 # ── Subjects ──────────────────────────────────────────────────
 subjects:
-  - "sub-02"
+  - "sub-07"
   - "sub-03"
   - "sub-04"
   - "sub-05"
   - "sub-06"
-  - "sub-07"
+  - "sub-02"
   - "sub-08"
   - "sub-09"
 
@@ -20,9 +20,11 @@ runs_per_session: 12
 task: "comp"
 
 # ── Paths ─────────────────────────────────────────────────────
-bids_root: ""  # must be provided
-glmsingle_root: ""  # must be provided
-embeddings_dir: "models/embeddings"         # relative to project root
+bids_root: "/project/def-afyshe-ab/hbalabin/comp_fmri_study_2025/bids"  # must be provided (BIDS dataset root)
+glmsingle_root: "/project/def-afyshe-ab/hbalabin/comp_fmri_study_2025/glmsingle"  # must be provided (GLMsingle outputs root)
+fmriprep_dir: "/project/def-afyshe-ab/hbalabin/comp_fmri_study_2025/fmriprep"  # must be provided (fMRIPrep outputs root for brain masks in T1w space)
+design_matrix_mapping_file: "/project/def-afyshe-ab/hbalabin/comp_fmri_study_2025/coco/coco_252_stimuli_local/design_matrix_mapping.csv"  # required for visualization-matched NC computation
+embeddings_dir: "/scratch/hbalabin/coco"         # relative to project root
 output_dir: "outputs/neural_encoding"       # relative to project root
 
 # ── VLM model & layer ────────────────────────────────────────
@@ -33,26 +35,21 @@ model: "Qwen/Qwen3.5-0.8B"
 vision_layer: 6
 text_layer: 12
 
-# ── Voxel selection (Explainable Variance) ───────────────────
-# Keep the top-k % of positive-EV voxels (e.g. 20 → top 20 %).
-# EV is computed from repeated presentations, following the VEM
-# framework (Dupré la Tour et al., 2025; Sahani & Linden, 2002).
-# √EV is the noise ceiling for r.
-ev_top_percentage: 20
-
 # ── PCA on embeddings ────────────────────────────────────────
-n_pca_components: 20
+n_pca_components: 50
 
-# ── Ridge regression ─────────────────────────────────────────
-# Gallant-lab style (gallantlab/voxelwise_tutorials):
-#   - Single train/test split by stimulus identity (GroupShuffleSplit).
-#   - Group-aware inner CV (GroupKFold) for per-voxel alpha selection.
-#   - Wide logarithmic alpha grid → np.logspace(alpha_log_min, alpha_log_max, n_alphas)
-test_size: 0.2            # fraction of stimuli held out for testing
-n_inner_folds: 5          # inner GroupKFold folds for alpha tuning
-alpha_log_min: 1
-alpha_log_max: 20
-n_alphas: 20
+# ── Voxel selection by noise ceiling ─────────────────────────
+# Keep top X% voxels separately for each fMRI modality (text/image)
+# based on modality-specific NC. Set 0 to disable.
+# NC is computed exactly as in visualize_noise_ceiling.py
+# (DESIGNINFO stimorder + design_matrix_mapping_file).
+nc_top_percent: 20
+
+# ── Fractional ridge regression ──────────────────────────────
+test_size: 0.2           # test set fraction for outer CV (if n_outer_folds = 1)
+n_inner_folds: 5          # inner GroupKFold folds for frac tuning
+n_outer_folds: 5          # >1 enables proper outer GroupKFold CV
+frac_grid: [0.1, 0.25, 0.5, 0.75, 1.0]
 
 # ── Permutation test ─────────────────────────────────────────
 # Number of permutations (shuffle embedding <-> stimulus mapping).
