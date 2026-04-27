@@ -22,6 +22,7 @@ Hydra config: ``configs/extract_embeddings.yaml``
 from __future__ import annotations
 
 import gc
+from dataclasses import dataclass
 from pathlib import Path
 
 import hydra
@@ -32,7 +33,13 @@ from loguru import logger
 from omegaconf import DictConfig
 from PIL import Image
 from tqdm import tqdm
-from transformers import AutoModelForImageTextToText, AutoProcessor
+from transformers import (
+    AutoImageProcessor,
+    AutoModel,
+    AutoModelForImageTextToText,
+    AutoProcessor,
+    AutoTokenizer,
+)
 
 from cross_modal_neural_encoding.config import PROJ_ROOT
 
@@ -77,6 +84,14 @@ class HiddenStateHooks:
         return self._states
 
 
+@dataclass
+class _ProcessorBundle:
+    """Simple container for separately loaded image processor + tokenizer."""
+
+    image_processor: object
+    tokenizer: object
+
+
 # ---------------------------------------------------------------------------
 # Model-introspection helpers  (extend these for new VLM families)
 # ---------------------------------------------------------------------------
@@ -101,6 +116,11 @@ def _get_vision_layers(model: torch.nn.Module) -> list[torch.nn.Module]:
     enc = getattr(getattr(model, "vision_model", None), "encoder", None)
     if enc is not None and hasattr(enc, "layers"):
         return list(enc.layers)
+    # Some CLIP / OpenCLIP variants expose visual blocks under .vision_model.vision_model
+    vm_inner = getattr(getattr(model, "vision_model", None), "vision_model", None)
+    vm_enc = getattr(vm_inner, "encoder", None)
+    if vm_enc is not None and hasattr(vm_enc, "layers"):
+        return list(vm_enc.layers)
     raise NotImplementedError(
         f"Cannot locate vision-encoder layers for {type(model).__name__}. "
         "Please extend _get_vision_layers()."
@@ -144,9 +164,86 @@ def _get_language_model(model: torch.nn.Module) -> torch.nn.Module:
         if hasattr(lm, "model") and hasattr(lm.model, "layers"):  # type: ignore[attr-defined]
             return lm.model  # type: ignore[attr-defined]
         return lm  # type: ignore[return-value]
+    # CLIP / OpenCLIP-style text tower
+    tm = getattr(model, "text_model", None)
+    if tm is not None and hasattr(tm, "encoder") and hasattr(tm.encoder, "layers"):
+        return tm  # type: ignore[return-value]
     raise NotImplementedError(
         f"Cannot locate language model for {type(model).__name__}. "
         "Please extend _get_language_model()."
+    )
+
+
+def _load_processor(model_name: str, cache_dir: str | None) -> object:
+    """Load a compatible processor bundle for vision + text extraction."""
+    try:
+        proc = AutoProcessor.from_pretrained(
+            model_name,
+            trust_remote_code=True,
+            cache_dir=cache_dir,
+        )
+        # Some repos expose only a tokenizer via AutoProcessor; ensure both
+        # image + text preprocessors are available for embedding extraction.
+        if hasattr(proc, "image_processor") and hasattr(proc, "tokenizer"):
+            return proc
+        logger.warning(
+            "AutoProcessor for "
+            f"{model_name} does not expose both image_processor and tokenizer. "
+            "Falling back to AutoImageProcessor + AutoTokenizer."
+        )
+    except Exception as exc:
+        logger.warning(
+            "AutoProcessor loading failed for "
+            f"{model_name}: {type(exc).__name__}: {exc}. "
+            "Falling back to AutoImageProcessor + AutoTokenizer."
+        )
+
+    image_processor = AutoImageProcessor.from_pretrained(
+        model_name,
+        trust_remote_code=True,
+        cache_dir=cache_dir,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name,
+        trust_remote_code=True,
+        cache_dir=cache_dir,
+        use_fast=False,
+    )
+    return _ProcessorBundle(image_processor=image_processor, tokenizer=tokenizer)
+
+
+def _load_model(
+    model_name: str,
+    dtype: torch.dtype,
+    cache_dir: str | None,
+) -> torch.nn.Module:
+    """Load VLM model with fallback across common HF APIs.
+
+    Tries image-text-to-text auto-class first, then generic AutoModel.
+    """
+    try:
+        return AutoModelForImageTextToText.from_pretrained(
+            model_name,
+            torch_dtype=dtype,
+            trust_remote_code=True,
+            low_cpu_mem_usage=False,
+            weights_only=False,
+            cache_dir=cache_dir,
+        )
+    except Exception as exc:
+        logger.warning(
+            "AutoModelForImageTextToText loading failed for "
+            f"{model_name}: {type(exc).__name__}: {exc}. "
+            "Falling back to AutoModel."
+        )
+
+    return AutoModel.from_pretrained(
+        model_name,
+        torch_dtype=dtype,
+        trust_remote_code=True,
+        low_cpu_mem_usage=False,
+        weights_only=False,
+        cache_dir=cache_dir,
     )
 
 
@@ -197,7 +294,7 @@ def _pool(
 
 def extract_vision_embeddings(
     model: torch.nn.Module,
-    processor: AutoProcessor,
+    processor: object,
     images: list[Image.Image],
     *,
     device: torch.device,
@@ -243,7 +340,7 @@ def extract_vision_embeddings(
 
 def extract_text_embeddings(
     model: torch.nn.Module,
-    processor: AutoProcessor,
+    processor: object,
     texts: list[str],
     *,
     device: torch.device,
@@ -434,21 +531,8 @@ def main(cfg: DictConfig) -> None:
         logger.info(f"Output: {model_dir}")
 
         logger.info("Loading model & processor …")
-        processor = AutoProcessor.from_pretrained(
-            model_name,
-            trust_remote_code=True,
-            cache_dir=cache_dir,
-        )
-        model = (
-            AutoModelForImageTextToText.from_pretrained(
-                model_name,
-                torch_dtype=dtype,
-                trust_remote_code=True,
-                cache_dir=cache_dir,
-            )
-            .to(device)  # type: ignore[method-assign]
-            .eval()
-        )
+        processor = _load_processor(model_name, cache_dir)
+        model = _load_model(model_name, dtype, cache_dir).to(device).eval()
 
         # ---- vision embeddings (unique images, then broadcast) ------------
         logger.info("Extracting vision-encoder embeddings …")
