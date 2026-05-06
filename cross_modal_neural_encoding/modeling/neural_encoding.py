@@ -19,15 +19,15 @@ Workflow
     a. Load GLMsingle Type-D betas and apply subject brain mask.
     b. Normalize betas within run.
     c. Compute modality-specific noise ceilings using the same method
-       as the visualization pipeline (DESIGNINFO + design mapping).
+        as the visualization pipeline (DESIGNINFO + design mapping).
     d. Parse BIDS events to map trial index → COCO ID + modality.
     e. Build single-trial samples for each fMRI modality.
     f. For each encoding condition, align trials with embeddings by COCO ID.
     g. Fit fractional ridge with nested CV:
-       - outer CV: GroupKFold (`n_outer_folds`) or single GroupShuffleSplit
-       - inner CV: GroupKFold for voxelwise frac selection.
+        - outer CV: GroupKFold (`n_outer_folds`) or single GroupShuffleSplit
+        - inner CV: GroupKFold for voxelwise frac selection.
     h. Evaluate with per-voxel Pearson *r* on held-out data
-       (optionally averaging repeats in the test set).
+        (optionally averaging repeats in the test set).
     i. Normalize *r* by per-voxel noise ceiling in correlation units.
 
 3. Aggregate results across subjects.
@@ -58,6 +58,7 @@ from joblib import Parallel, delayed
 from loguru import logger
 from omegaconf import DictConfig, OmegaConf
 from sklearn.decomposition import PCA
+from sklearn.linear_model import Ridge
 from sklearn.model_selection import GroupKFold, GroupShuffleSplit
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
@@ -449,8 +450,8 @@ def run_encoding(
     """Ridge encoding with nested group-aware CV.
 
      1. **Outer split** – if ``n_outer_folds > 1``, uses
-         ``GroupKFold(n_splits=n_outer_folds)`` for proper outer CV over
-         stimulus groups; otherwise uses a single ``GroupShuffleSplit`` holdout.
+            ``GroupKFold(n_splits=n_outer_folds)`` for proper outer CV over
+            stimulus groups; otherwise uses a single ``GroupShuffleSplit`` holdout.
     2. **Inner CV for frac** – ``GroupKFold`` on the training stimuli
         is used to select a best frac **per voxel** from ``frac_grid``.
     3. **Feature centering** – ``StandardScaler(with_mean=True,
@@ -458,7 +459,7 @@ def run_encoding(
     4. **Y centering** – Y is centred on the training-set mean per
         voxel and the same shift is applied to the test set.
      5. **Evaluation** – by default, training uses single-trial samples, while
-         held-out test trials are averaged per stimulus (group) before computing
+            held-out test trials are averaged per stimulus (group) before computing
          per-voxel Pearson *r*.
 
     Parameters

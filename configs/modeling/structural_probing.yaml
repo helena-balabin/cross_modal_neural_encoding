@@ -1,0 +1,19 @@
+# Configuration for structural probing analysis
+
+# Model configuration
+model: "Qwen/Qwen3.5-0.8B"
+layer: 6  # Layer to extract embeddings from
+
+# Data paths
+embeddings_dir: "models/embeddings"
+output_dir: "results/structural_probing"
+
+# Analysis parameters
+n_inner_folds: 5  # Number of inner CV folds for hyperparameter selection
+
+# Ridge regression parameters
+alpha_grid: "${python:np.logspace(-3, 3, 7)"  # Grid of regularization strengths
+
+# Dataset configuration
+dataset_name: "helena-balabin/coco_a_preprocessed_all"
+split: "train"
