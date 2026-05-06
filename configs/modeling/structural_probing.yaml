@@ -9,6 +9,7 @@ embeddings_dir: "models/embeddings"
 output_dir: "results/structural_probing"
 
 # Analysis parameters
+n_outer_folds: 5  # Number of outer CV folds for R² evaluation (averaged across folds)
 n_inner_folds: 5  # Number of inner CV folds for hyperparameter selection
 
 # Ridge regression parameters

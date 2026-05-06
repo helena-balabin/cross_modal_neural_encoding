@@ -1,0 +1,77 @@
+# ──────────────────────────────────────────────────────────────
+# Configuration for residual neural encoding analysis (§3.3)
+# See: cross_modal_neural_encoding/modeling/residual_encoding.py
+# ──────────────────────────────────────────────────────────────
+
+# ── Subjects ──────────────────────────────────────────────────
+subjects:
+  - "sub-07"
+  - "sub-03"
+  - "sub-04"
+  - "sub-05"
+  - "sub-06"
+  - "sub-02"
+  - "sub-08"
+  - "sub-09"
+
+# ── Experimental design ──────────────────────────────────────
+sessions: [1, 2, 3]
+runs_per_session: 12
+task: "comp"
+
+# ── Paths ─────────────────────────────────────────────────────
+glmsingle_root: "/project/def-afyshe-ab/hbalabin/comp_fmri_study_2025/glmsingle"
+fmriprep_dir: "/project/def-afyshe-ab/hbalabin/comp_fmri_study_2025/fmriprep"
+design_matrix_mapping_file: "/project/def-afyshe-ab/hbalabin/comp_fmri_study_2025/coco/coco_252_stimuli_local/design_matrix_mapping.csv"
+embeddings_dir: "/scratch/hbalabin/coco"
+output_dir: "outputs/residual_encoding"
+
+# ── Structural targets ────────────────────────────────────────
+# HuggingFace dataset providing AMR and action graph properties.
+# These are used only as a COCO-ID lookup: W* is fit exclusively on the
+# training split of the 252 fMRI study stimuli (no leakage).
+dataset_name: "helena-balabin/coco_a_preprocessed_all"
+dataset_split: "train"
+
+# ── Residualisation ───────────────────────────────────────────
+# Ridge α for the s → e regression (W* in Eq. 1 of the paper).
+residual_alpha: 1.0
+# Also run with s permuted across stimuli as an empirical control.
+run_permuted_control: true
+
+# ── VLM model & layer ────────────────────────────────────────
+model: "Qwen/Qwen3.5-0.8B"
+vision_layer: 6
+text_layer: 12
+
+# ── PCA on embeddings ────────────────────────────────────────
+n_pca_components: 50
+
+# ── Voxel selection by noise ceiling ─────────────────────────
+nc_top_percent: 20
+nc_num_averages: 6
+
+# ── Fractional ridge regression ──────────────────────────────
+test_size: 0.2
+n_inner_folds: 5
+n_outer_folds: 5
+frac_grid: [0.1, 0.25, 0.5, 0.75, 1.0]
+
+# ── Events file columns ─────────────────────────────────────
+modality_column: "modality"
+cocoid_column: "cocoid"
+
+# ── Encoding conditions (same 2×2 design as neural_encoding) ─
+conditions:
+  text_to_text:
+    embed_modality: "text"
+    fmri_modality: "text"
+  image_to_image:
+    embed_modality: "vision"
+    fmri_modality: "image"
+  image_to_text:
+    embed_modality: "vision"
+    fmri_modality: "text"
+  text_to_image:
+    embed_modality: "text"
+    fmri_modality: "image"

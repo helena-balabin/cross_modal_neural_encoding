@@ -4,7 +4,7 @@
 
 For each **(subject, condition)** pair, we fit a **voxel-wise linear encoding model** that maps VLM embeddings to single-trial fMRI betas. The model is evaluated using Pearson correlation between predicted and measured responses on held-out stimuli.
 
-Implemented in `cross_modal_neural_encoding/neural_encoding.py`.
+Implemented in `cross_modal_neural_encoding/modeling/neural_encoding.py`.
 
 ---
 
@@ -108,10 +108,15 @@ For each **(subject, condition)**:
 
 | File | Shape | Description |
 | --- | --- | --- |
-| `per_voxel_r.npy` | (n_voxels,) | Pearson r per voxel |
-| `noise_ceiling.npy` | (n_voxels,) | NC in correlation units per voxel |
-| `best_frac_per_voxel.npy` | (n_voxels,) | Selected regularisation fraction |
-| `null_mean_r.npy` | (n_permutations,) | Null distribution (if run) |
+| `per_voxel_r.npy` | (n_selected_voxels,) | Pearson r per selected voxel |
+| `noise_ceiling.npy` | (n_selected_voxels,) | NC in correlation units per voxel |
+| `best_frac_per_voxel.npy` | (n_selected_voxels,) | Selected regularisation fraction |
+| `voxel_keep.npy` | (n_in_brain_voxels,) | Boolean mask: which in-brain voxels are included |
+| `per_voxel_r.nii.gz` | 3D volume | Pearson r reconstructed in native T1w space (NaN outside selection) |
+| `noise_ceiling.nii.gz` | 3D volume | Noise ceiling in native T1w space |
+| `null_mean_r.npy` | (n_permutations,) | Null distribution (if permutation test run) |
+
+`voxel_keep.npy` lets you reconstruct results at any point using `utils.save_voxelwise_nifti()`. `n_selected_voxels` equals the top-`nc_top_percent`% of in-brain voxels ranked by noise ceiling for the relevant modality (or all in-brain voxels when `nc_top_percent=0`).
 
 Aggregated across subjects:
 
@@ -120,6 +125,18 @@ Aggregated across subjects:
 | `summary.csv` | Per-subject, per-condition mean r and mean normalised r |
 | `aggregated.csv` | Group-level mean ± std per condition |
 | `noise_ceiling_subject_stats.csv` | Cross-subject NC consistency check |
+
+---
+
+## Residual Neural Encoding
+
+The structure-targeted residual analysis (§3.3) is a separate step run via `residual_encoding.py`. It extends the standard pipeline with a within-split ablation of the compositional structural component from the embeddings before fitting the encoding model. See [Structural Analysis](05_structural_analysis.md) for the full method description.
+
+```bash
+python -m cross_modal_neural_encoding.modeling.residual_encoding
+```
+
+Config: `configs/modeling/residual_encoding.yaml`
 
 ---
 

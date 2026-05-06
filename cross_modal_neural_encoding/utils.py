@@ -330,6 +330,68 @@ def get_affine(fmriprep_dir: Path, subject: str) -> np.ndarray:
     return affine
 
 
+def load_brain_mask_img(fmriprep_dir: Path, subject: str) -> "nib.Nifti1Image":
+    """Return the fMRIPrep T1w brain-mask as a nibabel image (affine + shape).
+
+    Use this when you need the 3-D geometry to reconstruct a volumetric NIfTI
+    from a flat per-voxel array.  For the plain boolean mask use
+    :func:`load_brain_mask`.
+    """
+    subject_dir = fmriprep_dir / subject
+    func_dirs = _find_subdir(subject_dir, "func")
+    if not func_dirs:
+        raise FileNotFoundError(f"No func directory found for {subject}")
+
+    mask_files = [
+        f for d in func_dirs
+        for f in d.glob("*space-T1w*_desc-brain_mask.nii.gz")
+    ]
+    if not mask_files:
+        raise FileNotFoundError(
+            f"No T1w space brain mask found for {subject}."
+        )
+    return nib.load(mask_files[0])  # type: ignore[return-value]
+
+
+def save_voxelwise_nifti(
+    values: np.ndarray,
+    voxel_keep: np.ndarray,
+    brain_mask: np.ndarray,
+    ref_img: "nib.Nifti1Image",
+    out_path: Path,
+) -> None:
+    """Save a per-voxel array as a NIfTI volume in native T1w space.
+
+    Parameters
+    ----------
+    values : (n_selected_voxels,)
+        Scalar values (e.g. Pearson r) for the *selected* in-brain voxels.
+    voxel_keep : (n_in_brain_voxels,) bool
+        Mask indicating which in-brain voxels are included in *values*.
+        ``values[i]`` corresponds to the ``i``-th True position in voxel_keep.
+    brain_mask : (n_flat_voxels,) bool
+        Full flattened brain mask mapping in-brain voxels to the 3-D volume.
+    ref_img : nib.Nifti1Image
+        Reference image that provides the 3-D shape and affine.
+    out_path : Path
+        Destination ``.nii.gz`` path.
+    """
+    shape_3d = ref_img.shape[:3]
+    volume = np.full(int(np.prod(shape_3d)), np.nan, dtype=np.float32)
+
+    # Map selected values into the full flattened space
+    in_brain_indices = np.flatnonzero(brain_mask)
+    selected_indices = in_brain_indices[voxel_keep]
+    volume[selected_indices] = values.astype(np.float32)
+
+    img = nib.Nifti1Image(  # type: ignore[attr-defined]
+        volume.reshape(shape_3d), affine=ref_img.affine, header=ref_img.header
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    nib.save(img, str(out_path))  # type: ignore[attr-defined]
+    logger.debug(f"Saved NIfTI map → {out_path}")
+
+
 def load_brain_mask(fmriprep_dir: Path, subject: str) -> np.ndarray:
     """Load brain mask from fMRIPrep outputs in subject-native T1w space.
 

@@ -7,6 +7,8 @@ nav:
   - Datasets: 02_datasets.md
   - Feature Extraction: 03_feature_extraction.md
   - Neural Encoding: 04_neural_encoding.md
+  - Structural Analysis: 05_structural_analysis.md
+  - Residual Neural Encoding: residual_encoding.md
   - Evaluation & Statistics: 05_evaluation_and_statistics.md
   - Visualization: 06_visualization.md
   - Configuration: 07_configuration.md

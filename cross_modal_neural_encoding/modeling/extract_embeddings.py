@@ -121,6 +121,9 @@ def _get_vision_layers(model: torch.nn.Module) -> list[torch.nn.Module]:
     vm_enc = getattr(vm_inner, "encoder", None)
     if vm_enc is not None and hasattr(vm_enc, "layers"):
         return list(vm_enc.layers)
+    # Bare ViT (DINOv2, LeJEPA, plain timm ViT) — top-level .blocks
+    if hasattr(model, "blocks"):
+        return list(model.blocks)  # type: ignore[attr-defined]
     raise NotImplementedError(
         f"Cannot locate vision-encoder layers for {type(model).__name__}. "
         "Please extend _get_vision_layers()."
@@ -141,6 +144,8 @@ def _forward_vision(
         model.vision_tower(pixel_values)  # type: ignore[attr-defined]
     elif hasattr(model, "vision_model"):  # BLIP-2 family
         model.vision_model(pixel_values)  # type: ignore[attr-defined]
+    elif hasattr(model, "blocks"):  # Bare ViT (DINOv2, LeJEPA, timm)
+        model(pixel_values)  # type: ignore[operator]
     else:
         raise NotImplementedError(
             f"Unsupported vision encoder for {type(model).__name__}. "
@@ -168,6 +173,13 @@ def _get_language_model(model: torch.nn.Module) -> torch.nn.Module:
     tm = getattr(model, "text_model", None)
     if tm is not None and hasattr(tm, "encoder") and hasattr(tm.encoder, "layers"):
         return tm  # type: ignore[return-value]
+    # OPT — decoder-only LM: model.model.decoder.layers
+    dec = getattr(getattr(model, "model", None), "decoder", None)
+    if dec is not None and hasattr(dec, "layers"):
+        return dec  # type: ignore[return-value]
+    # Bare decoder (Llama, Mistral loaded via AutoModel): model.layers
+    if hasattr(model, "layers"):
+        return model  # type: ignore[return-value]
     raise NotImplementedError(
         f"Cannot locate language model for {type(model).__name__}. "
         "Please extend _get_language_model()."
@@ -530,38 +542,50 @@ def main(cfg: DictConfig) -> None:
         logger.info(f"Model : {model_name}")
         logger.info(f"Output: {model_dir}")
 
+        # model_type controls which encoders to extract:
+        #   "vlm"           → both vision and text (default)
+        #   "vision_only"   → vision only  (DINOv2, LeJEPA, …)
+        #   "language_only" → text only    (Llama-3.2, OPT, …)
+        model_type: str = cfg.get("model_type", "vlm").lower()
+
         logger.info("Loading model & processor …")
         processor = _load_processor(model_name, cache_dir)
         model = _load_model(model_name, dtype, cache_dir).to(device).eval()
 
         # ---- vision embeddings (unique images, then broadcast) ------------
-        logger.info("Extracting vision-encoder embeddings …")
-        vis_embs = extract_vision_embeddings(
-            model,
-            processor,
-            unique_images,
-            device=device,
-            dtype=dtype,
-            pooling=pooling,
-            layer_indices=vision_layer_indices,
-        )
-        vis_embs = {k: v[broadcast] for k, v in vis_embs.items()}
-        _save_embeddings(vis_embs, model_dir, "vision_embeddings", coco_ids)
+        if model_type in ("vlm", "vision_only"):
+            logger.info("Extracting vision-encoder embeddings …")
+            vis_embs = extract_vision_embeddings(
+                model,
+                processor,
+                unique_images,
+                device=device,
+                dtype=dtype,
+                pooling=pooling,
+                layer_indices=vision_layer_indices,
+            )
+            vis_embs = {k: v[broadcast] for k, v in vis_embs.items()}
+            _save_embeddings(vis_embs, model_dir, "vision_embeddings", coco_ids)
+        else:
+            logger.info("Skipping vision embeddings (model_type='language_only').")
 
         # ---- text embeddings (one per row) --------------------------------
-        logger.info("Extracting text-encoder embeddings …")
-        txt_embs = extract_text_embeddings(
-            model,
-            processor,
-            texts,
-            device=device,
-            dtype=dtype,
-            pooling=pooling,
-            layer_indices=text_layer_indices,
-            batch_size=batch_size,
-            max_length=max_length,
-        )
-        _save_embeddings(txt_embs, model_dir, "text_embeddings", coco_ids)
+        if model_type in ("vlm", "language_only"):
+            logger.info("Extracting text-encoder embeddings …")
+            txt_embs = extract_text_embeddings(
+                model,
+                processor,
+                texts,
+                device=device,
+                dtype=dtype,
+                pooling=pooling,
+                layer_indices=text_layer_indices,
+                batch_size=batch_size,
+                max_length=max_length,
+            )
+            _save_embeddings(txt_embs, model_dir, "text_embeddings", coco_ids)
+        else:
+            logger.info("Skipping text embeddings (model_type='vision_only').")
 
         # ---- cleanup ------------------------------------------------------
         del model, processor

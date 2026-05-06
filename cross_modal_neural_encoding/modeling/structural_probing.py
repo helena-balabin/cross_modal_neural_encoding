@@ -69,11 +69,16 @@ def run_structural_probing(
     targets: dict[str, np.ndarray],
     target_coco_ids: np.ndarray,
     target_names: list[str],
+    n_outer_folds: int = 5,
     n_inner_folds: int = 5,
     alpha_grid: np.ndarray = np.logspace(-3, 3, 7),
     verbose: bool = True
 ) -> dict[str, float]:
     """Run structural probing analysis to predict graph properties from embeddings.
+
+    Uses nested 5-fold cross-validation: the outer loop evaluates R² on held-out
+    folds (averaged across folds), and the inner loop selects the ridge alpha on
+    the outer training portion. This matches the procedure in §3.2 of the paper.
 
     Parameters
     ----------
@@ -87,6 +92,8 @@ def run_structural_probing(
         COCO IDs corresponding to the targets.
     target_names : list[str]
         Names of the targets to probe for (keys in targets dict).
+    n_outer_folds : int
+        Number of outer CV folds for R² evaluation (averaged across folds).
     n_inner_folds : int
         Number of inner CV folds for hyperparameter selection.
     alpha_grid : np.ndarray
@@ -97,13 +104,13 @@ def run_structural_probing(
     Returns
     -------
     results : dict[str, float]
-        R² scores for each target.
+        R² scores for each target, averaged across outer CV folds.
     """
     results = {}
 
     # Align embeddings with targets by COCO ID
     embed_id_to_idx = {int(cid): i for i, cid in enumerate(embed_coco_ids)}
-    common_ids = [cid for cid in target_coco_ids if int(cid) in embed_id_to_idx]
+    common_ids = np.array([cid for cid in target_coco_ids if int(cid) in embed_id_to_idx])
 
     if len(common_ids) == 0:
         raise ValueError("No overlapping COCO IDs between embeddings and targets")
@@ -111,70 +118,64 @@ def run_structural_probing(
     X_list = []
     y_lists = {name: [] for name in target_names}
 
+    target_id_to_idx = {int(cid): i for i, cid in enumerate(target_coco_ids)}
     for cid in common_ids:
-        embed_idx = embed_id_to_idx[int(cid)]
-        X_list.append(embeddings[embed_idx])
-
-        target_idx = np.where(target_coco_ids == cid)[0][0]
+        X_list.append(embeddings[embed_id_to_idx[int(cid)]])
         for name in target_names:
-            y_lists[name].append(targets[name][target_idx])
+            y_lists[name].append(targets[name][target_id_to_idx[int(cid)]])
 
     X = np.array(X_list)
-
-    # Convert all targets to numpy arrays
     y_data = {name: np.array(y_lists[name]) for name in target_names}
+    groups = common_ids  # one group per unique stimulus
 
-    # Nested cross-validation for each target
+    actual_outer = min(n_outer_folds, len(np.unique(groups)))
+    outer_cv = GroupKFold(n_splits=actual_outer)
+
     for target_name in target_names:
         y = y_data[target_name]
 
-        # Skip if all values are the same (variance is zero)
         if np.var(y) < 1e-10:
             results[target_name] = 0.0
             if verbose:
                 logger.warning(f"Target {target_name} has zero variance, setting R² to 0")
             continue
 
-        # Group by stimulus ID for proper CV
-        groups = np.array(common_ids)
+        fold_r2: list[float] = []
 
-        # Inner CV for hyperparameter selection
-        inner_cv = GroupKFold(n_splits=n_inner_folds)
-        best_alphas = []
+        for outer_train_idx, outer_test_idx in outer_cv.split(X, groups=groups):
+            X_train, X_test = X[outer_train_idx], X[outer_test_idx]
+            y_train, y_test = y[outer_train_idx], y[outer_test_idx]
+            groups_train = groups[outer_train_idx]
 
-        for train_idx, val_idx in inner_cv.split(X, groups=groups):
-            X_train, X_val = X[train_idx], X[val_idx]
-            y_train, y_val = y[train_idx], y[val_idx]
+            # Inner CV: select best alpha on the outer training portion
+            actual_inner = min(n_inner_folds, len(np.unique(groups_train)))
+            inner_cv = GroupKFold(n_splits=actual_inner)
 
-            # Search for best alpha
-            best_score = -np.inf
-            best_alpha = alpha_grid[0]
+            alpha_scores = np.zeros(len(alpha_grid))
+            n_inner_splits = 0
+            for in_train_idx, in_val_idx in inner_cv.split(X_train, groups=groups_train):
+                X_in, X_val = X_train[in_train_idx], X_train[in_val_idx]
+                y_in, y_val = y_train[in_train_idx], y_train[in_val_idx]
+                for ai, alpha in enumerate(alpha_grid):
+                    ridge = Ridge(alpha=alpha, fit_intercept=True)
+                    ridge.fit(X_in, y_in)
+                    alpha_scores[ai] += ridge.score(X_val, y_val)
+                n_inner_splits += 1
 
-            for alpha in alpha_grid:
-                ridge = Ridge(alpha=alpha, fit_intercept=True)
-                ridge.fit(X_train, y_train)
-                score = ridge.score(X_val, y_val)
+            best_alpha = alpha_grid[np.argmax(alpha_scores / max(n_inner_splits, 1))]
 
-                if score > best_score:
-                    best_score = score
-                    best_alpha = alpha
+            # Evaluate on outer test fold
+            final_ridge = Ridge(alpha=best_alpha, fit_intercept=True)
+            final_ridge.fit(X_train, y_train)
+            fold_r2.append(float(final_ridge.score(X_test, y_test)))
 
-            best_alphas.append(best_alpha)
-
-        # Use mean best alpha for final evaluation
-        final_alpha = np.mean(best_alphas)
-
-        # Evaluate on full dataset (standard practice for probing)
-        final_ridge = Ridge(alpha=final_alpha, fit_intercept=True)
-        final_ridge.fit(X, y)
-        r2_score = final_ridge.score(X, y)
-
+        r2_score = float(np.mean(fold_r2))
         results[target_name] = r2_score
 
         if verbose:
             logger.info(
-                f"{target_name}: R² = {r2_score:.4f}, "
-                f"alpha = {final_alpha:.3e}"
+                f"{target_name}: R² = {r2_score:.4f} "
+                f"(mean across {actual_outer} outer folds)"
             )
 
     return results
@@ -228,12 +229,15 @@ def main(cfg: DictConfig) -> None:
         embeddings_dir, model_label, "vision", layer
     )
 
+    n_outer_folds = cfg.get("n_outer_folds", 5)
+
     vision_results = run_structural_probing(
         vision_embs,
         vision_coco_ids,
         targets,
         target_coco_ids,
         action_targets,
+        n_outer_folds=n_outer_folds,
         n_inner_folds=n_inner_folds
     )
 
@@ -249,6 +253,7 @@ def main(cfg: DictConfig) -> None:
         targets,
         target_coco_ids,
         amr_targets,
+        n_outer_folds=n_outer_folds,
         n_inner_folds=n_inner_folds
     )
 

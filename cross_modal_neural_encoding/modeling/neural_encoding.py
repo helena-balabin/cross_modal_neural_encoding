@@ -69,6 +69,8 @@ from cross_modal_neural_encoding.utils import (
     compute_nc_by_modality,
     load_design_matrix_mapping,
     load_brain_mask,
+    load_brain_mask_img,
+    save_voxelwise_nifti,
 )
 
 
@@ -395,6 +397,58 @@ def align_single_trials(
     return X, trial_betas, trial_coco_ids
 
 
+def build_structural_feature_vectors(
+    coco_ids: np.ndarray,
+    targets: dict[str, np.ndarray],
+    target_coco_ids: np.ndarray,
+    embed_modality: str,
+) -> np.ndarray:
+    """Build structural feature vectors s ∈ ℝ³ per trial for residualization.
+
+    Modality matching (§3.3): text embeddings → AMR graph properties;
+    vision embeddings → action graph properties.
+
+    Parameters
+    ----------
+    coco_ids : (n_trials,)
+        COCO ID for each trial (may contain repeats).
+    targets : dict[str, np.ndarray]
+        Structural target arrays keyed by column name.
+    target_coco_ids : (n_stimuli,)
+        COCO IDs corresponding to each row of the target arrays.
+    embed_modality : "text" or "vision"
+        Determines which graph's properties to use.
+
+    Returns
+    -------
+    s : (n_trials, 3) float32 — [node_count, edge_count, graph_depth].
+        Rows for COCO IDs absent from target_coco_ids are NaN.
+    """
+    if embed_modality == "text":
+        col_nodes, col_edges, col_depth = (
+            "amr_n_nodes", "amr_n_edges", "amr_graph_depth"
+        )
+    else:
+        col_nodes, col_edges, col_depth = (
+            "coco_a_nodes", "coco_a_edges", "coco_a_graph_depth"
+        )
+
+    target_lookup: dict[int, np.ndarray] = {
+        int(cid): np.array(
+            [targets[col_nodes][i], targets[col_edges][i], targets[col_depth][i]],
+            dtype=np.float32,
+        )
+        for i, cid in enumerate(target_coco_ids)
+    }
+
+    nan_row = np.full(3, np.nan, dtype=np.float32)
+    s = np.stack(
+        [target_lookup.get(int(cid), nan_row) for cid in coco_ids],
+        axis=0,
+    )
+    return s
+
+
 # ---------------------------------------------------------------------------
 # Encoding model
 # ---------------------------------------------------------------------------
@@ -445,6 +499,8 @@ def run_encoding(
     noise_ceiling: np.ndarray | None = None,
     random_state: int = 42,
     average_test_by_group: bool = True,
+    structural_features: np.ndarray | None = None,
+    residual_alpha: float = 1.0,
     verbose: bool = True,
 ) -> dict:
     """Ridge encoding with nested group-aware CV.
@@ -477,6 +533,14 @@ def run_encoding(
     random_state : random seed for the train/test split.
     average_test_by_group : if True, average held-out test responses per
         stimulus before scoring.
+    structural_features : optional (n_samples, 3) structural feature vectors
+        **s** (node count, edge count, graph depth) aligned to trials.
+        When provided, a ridge regression W* is fit on the training split to
+        predict each embedding dimension from **s**, and the residual
+        **ẽ** = **e** − W***s** replaces **e** before the encoding model is
+        fit.  This is the within-split residualization of §3.3.
+    residual_alpha : ridge regularisation strength for the **s** → **e**
+        regression (default 1.0).
 
     Returns
     -------
@@ -525,10 +589,21 @@ def run_encoding(
         inner_cv = GroupKFold(n_splits=actual_inner)
         inner_splits = list(inner_cv.split(X_train, groups=groups_train))
 
-        # ---- 4. Scale X + inner selection --------------------------------
+        # ---- 4. Scale X ------------------------------------------------
         scaler = StandardScaler(with_mean=True, with_std=False)
         X_train = scaler.fit_transform(X_train)
         X_test = scaler.transform(X_test)
+
+        # ---- 4b. Structure residualization (§3.3) ----------------------
+        # Fit W* on training split only, then subtract linear contribution
+        # of structural features s from both train and test embeddings.
+        if structural_features is not None:
+            s_train = structural_features[train_idx].astype("float32")
+            s_test = structural_features[test_idx].astype("float32")
+            resid_model = Ridge(alpha=residual_alpha, fit_intercept=True)
+            resid_model.fit(s_train, X_train)
+            X_train = X_train - resid_model.predict(s_train)
+            X_test = X_test - resid_model.predict(s_test)
 
         cv_scores = np.zeros((n_fracs, n_voxels), dtype=np.float64)
         for tr_idx, val_idx in inner_splits:
@@ -862,6 +937,7 @@ def main(cfg: DictConfig) -> None:
         # Load brain mask from fMRIPrep (subject-native T1w space)
         fmriprep_dir = Path(cfg.get("fmriprep_dir", ""))
         brain_mask = load_brain_mask(fmriprep_dir, subject)
+        brain_mask_img = load_brain_mask_img(fmriprep_dir, subject)
 
         # Keep only in-brain voxels for encoding regression.
         n_total_voxels = betas_full.shape[0]
@@ -957,6 +1033,7 @@ def main(cfg: DictConfig) -> None:
             nc_ceiling = nc_corr_by_modality_full[fmri_mod][brain_mask]
 
             # Optional: keep only top X% voxels by modality-specific noise ceiling
+            n_in_brain = brain_mask.sum()
             if nc_top_percent > 0:
                 valid_nc = np.isfinite(nc_ceiling) & (nc_ceiling > 0)
                 if valid_nc.any():
@@ -968,11 +1045,11 @@ def main(cfg: DictConfig) -> None:
                     voxel_keep = np.isfinite(nc_ceiling)
                 nc_ceiling = nc_ceiling[voxel_keep]
             else:
-                voxel_keep = slice(None)
+                voxel_keep = np.ones(n_in_brain, dtype=bool)
 
             trial_betas = trial_betas[:, voxel_keep]
 
-            fmri_cache[fmri_mod] = (trial_coco_ids, trial_betas, nc_ceiling)
+            fmri_cache[fmri_mod] = (trial_coco_ids, trial_betas, nc_ceiling, voxel_keep)
             logger.info(
                 f"  fMRI {fmri_mod}: {len(trial_coco_ids)} trials "
                 f"({len(np.unique(trial_coco_ids))} stimuli, "
@@ -988,7 +1065,7 @@ def main(cfg: DictConfig) -> None:
             logger.info(f"  Condition: {cond_name} ({emod} embed → {fmod} fMRI)")
 
             embed_ids, embed_feats = embed_data[emod]
-            trial_cids, trial_betas, noise_ceiling_r = fmri_cache[fmod]
+            trial_cids, trial_betas, noise_ceiling_r, voxel_keep = fmri_cache[fmod]
 
             X, Y, groups = align_single_trials(
                 embed_ids, embed_feats, trial_cids, trial_betas
@@ -1063,6 +1140,7 @@ def main(cfg: DictConfig) -> None:
             cond_dir.mkdir(parents=True, exist_ok=True)
             np.save(cond_dir / "per_voxel_r.npy", result["per_voxel_r"])
             np.save(cond_dir / "noise_ceiling.npy", noise_ceiling_r)
+            np.save(cond_dir / "voxel_keep.npy", voxel_keep)
             np.save(
                 cond_dir / "best_frac_per_voxel.npy",
                 result["best_frac_per_voxel"],
@@ -1072,6 +1150,14 @@ def main(cfg: DictConfig) -> None:
                     cond_dir / "null_mean_r.npy",
                     perm_result["null_mean_r"],
                 )
+            save_voxelwise_nifti(
+                result["per_voxel_r"], voxel_keep, brain_mask,
+                brain_mask_img, cond_dir / "per_voxel_r.nii.gz",
+            )
+            save_voxelwise_nifti(
+                noise_ceiling_r, voxel_keep, brain_mask,
+                brain_mask_img, cond_dir / "noise_ceiling.nii.gz",
+            )
 
             summary_rows.append(
                 {
@@ -1102,6 +1188,7 @@ def main(cfg: DictConfig) -> None:
                     ),
                 }
             )
+
 
     # -- aggregate across subjects -------------------------------------------
     logger.info(f"\n{'=' * 60}")

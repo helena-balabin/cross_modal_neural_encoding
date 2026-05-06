@@ -1,0 +1,20 @@
+# ──────────────────────────────────────────────────────────────
+# Configuration for residual encoding visualization
+# See: cross_modal_neural_encoding/visualization/visualize_residual_encoding.py
+# ──────────────────────────────────────────────────────────────
+
+# Paths to per-subject summary CSVs produced by the two encoding pipelines.
+# Override on the command line:
+#   standard_summary=/path/to/neural_encoding/<model>/summary.csv
+#   residual_summary=/path/to/residual_encoding/<model>/summary.csv
+standard_summary: "outputs/neural_encoding/Qwen--Qwen3.5-0.8B/summary.csv"
+residual_summary: "outputs/residual_encoding/Qwen--Qwen3.5-0.8B/summary.csv"
+
+# Metric column from the summary CSV to plot.
+metric: "mean_normalized_r"
+
+# Whether to include the permuted-s control bars.
+show_permuted: true
+
+# Output directory for figures.
+output_dir: "reports/figures/residual_encoding"
