@@ -80,81 +80,6 @@ from cross_modal_neural_encoding.utils import (
 # ---------------------------------------------------------------------------
 
 
-def load_events(
-    bids_root: Path,
-    subject: str,
-    *,
-    sessions: list[int],
-    runs_per_session: int,
-    task: str,
-    modality_column: str,
-    cocoid_column: str,
-) -> pd.DataFrame:
-    """Parse BIDS events files and return a table of non-blank trials.
-
-    Iterates over sessions and runs in canonical order so that the
-    sequential ``beta_index`` matches the GLMsingle ``betasmd`` last
-    dimension.
-
-    Returns
-    -------
-    DataFrame with columns ``beta_index``, ``cocoid`` (int), ``modality``,
-    ``run_label``.
-    """
-    records: list[dict] = []
-    beta_idx = 0
-    run_counter = 0  # global run index across all sessions
-
-    for ses in sessions:
-        for run in range(1, runs_per_session + 1):
-            fname = (
-                f"{subject}_ses-{ses:02d}_task-{task}_run-{run:02d}_events.tsv"
-            )
-            events_path = (
-                bids_root / subject / f"ses-{ses:02d}" / "func" / fname
-            )
-            if not events_path.exists():
-                logger.warning(f"Missing events file: {events_path}")
-                continue
-
-            df_run = pd.read_csv(events_path, sep="\t").sort_values("onset")
-
-            for _, row in df_run.iterrows():
-                mod = str(row[modality_column]).strip().lower()
-                cid = row[cocoid_column]
-
-                invalid = False
-                if mod in ("blank", "nan", "n/a", ""):
-                    invalid = True
-                if pd.isna(cid) or str(cid).strip().lower() == "n/a":
-                    invalid = True
-
-                if not invalid:
-                    records.append(
-                        {
-                            "beta_index": beta_idx,
-                            "cocoid": int(float(cid)),
-                            "modality": mod,
-                            "run_label": run_counter,
-                        }
-                    )
-                    # GLMsingle betas are defined for retained task trials
-                    # (blank/invalid events are not represented in betas).
-                    beta_idx += 1
-
-            run_counter += 1
-
-    events_df = pd.DataFrame(records)
-    n_img = (events_df["modality"] == "image").sum()
-    n_txt = (events_df["modality"] == "text").sum()
-    logger.info(
-        f"  {subject}: {len(events_df)} trials "
-        f"({n_img} image, {n_txt} text, "
-        f"{events_df['cocoid'].nunique()} unique stimuli)"
-    )
-    return events_df
-
-
 def load_designinfo_stimulus_ids_and_num_runs(
     glmsingle_root: Path,
     subject: str,
@@ -874,9 +799,43 @@ def main(cfg: DictConfig) -> None:
     n_permutations: int = cfg.get("n_permutations", 0)
     n_jobs_permutations: int = int(cfg.get("n_jobs_permutations", 1))
     permutation_cpu_reserve: int = int(cfg.get("permutation_cpu_reserve", 2))
-    sessions: list[int] = list(cfg.sessions)
-    runs_per_session: int = cfg.runs_per_session
     conditions: dict = OmegaConf.to_container(cfg.conditions, resolve=True)  # type: ignore[assignment]
+
+    # -- auto-detect available embedding modalities ------------------------
+    available_modalities: set[str] = set()
+    for modality in ("vision", "text"):
+        modality_dir = embeddings_dir / model_label / f"{modality}_embeddings"
+        if modality_dir.exists():
+            available_modalities.add(modality)
+
+    if not available_modalities:
+        raise FileNotFoundError(
+            "No embedding directories found for model. Expected one of: "
+            f"{embeddings_dir / model_label / 'vision_embeddings'} or "
+            f"{embeddings_dir / model_label / 'text_embeddings'}."
+        )
+
+    filtered_conditions: dict[str, dict] = {
+        name: cfg
+        for name, cfg in conditions.items()
+        if cfg.get("embed_modality") in available_modalities
+    }
+    if len(filtered_conditions) < len(conditions):
+        removed = [
+            name
+            for name, cfg in conditions.items()
+            if cfg.get("embed_modality") not in available_modalities
+        ]
+        logger.warning(
+            "Dropping conditions with missing embeddings: "
+            f"{', '.join(removed)}"
+        )
+    if not filtered_conditions:
+        raise ValueError(
+            "No remaining conditions after filtering by available embeddings. "
+            f"Available modalities: {sorted(available_modalities)}"
+        )
+    conditions = filtered_conditions
 
     # Optional auto worker selection for permutation test.
     if n_jobs_permutations <= 0:

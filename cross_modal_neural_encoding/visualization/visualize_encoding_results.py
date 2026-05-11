@@ -606,31 +606,38 @@ def plot_grouped_model_means(
     figsize: tuple[float, float],
     y_limits: tuple[float, float] | None,
 ) -> None:
-    """Plot grouped bars comparing model group means across conditions."""
+    """Plot grouped bars comparing model means across conditions.
+
+    Models are allowed to have different condition sets; missing values
+    are shown as empty slots (no bar).
+    """
     if len(model_results) < 2:
         logger.warning("Grouped model plot requires at least two models.")
         return
 
-    common_conditions: set[str] | None = None
+    all_conditions: set[str] = set()
     for item in model_results:
         df = item["aggregated_df"]
-        conds = set(df.index)
-        common_conditions = conds if common_conditions is None else common_conditions & conds
+        all_conditions.update(df.index)
 
-    if not common_conditions:
-        raise ValueError("No common conditions across models to plot.")
+    if not all_conditions:
+        logger.warning("No conditions found across models to plot.")
+        return
 
-    conditions = _condition_order_from_index(common_conditions)
+    conditions = _condition_order_from_index(all_conditions)
     labels = [CONDITION_LABELS.get(c, c) for c in conditions]
 
     model_labels = [item["model_label"] for item in model_results]
     n_models = len(model_labels)
     n_conditions = len(conditions)
 
-    values = np.zeros((n_models, n_conditions), dtype=float)
+    values = np.full((n_models, n_conditions), np.nan, dtype=float)
     for i, item in enumerate(model_results):
-        df = item["aggregated_df"].loc[conditions]
-        values[i] = np.asarray(df[(metric, "mean")], dtype=float)
+        df = item["aggregated_df"]
+        for j, cond in enumerate(conditions):
+            if cond not in df.index:
+                continue
+            values[i, j] = float(df.loc[cond, (metric, "mean")])
 
     pvals = np.full((n_models, n_conditions), np.nan, dtype=float)
     for i, item in enumerate(model_results):
@@ -638,6 +645,8 @@ def plot_grouped_model_means(
         if summary_df is None or metric not in summary_df.columns:
             continue
         for j, cond in enumerate(conditions):
+            if cond not in summary_df["condition"].unique():
+                continue
             vals = np.asarray(
                 summary_df.loc[summary_df["condition"] == cond, metric],
                 dtype=float,
@@ -654,10 +663,14 @@ def plot_grouped_model_means(
     colors = [WARM_MODEL_PALETTE[i % len(WARM_MODEL_PALETTE)] for i in range(n_models)]
 
     if y_limits is None:
-        stds = np.zeros_like(values)
+        finite_values = values[np.isfinite(values)]
+        if finite_values.size == 0:
+            logger.warning("No finite values available for grouped plot.")
+            return
+        stds = np.zeros_like(finite_values)
         y_min, y_max = _compute_plot_ylims(
-            values.ravel(),
-            stds.ravel(),
+            finite_values,
+            stds,
             is_normalized_metric=is_normalized_metric,
             compress_normalized_axis=compress_normalized_axis,
             normalized_axis_linthresh=normalized_axis_linthresh,
@@ -680,6 +693,8 @@ def plot_grouped_model_means(
 
         # Significance annotations per model-condition (if available).
         for j, (xj, hj) in enumerate(zip(x + offsets[i], values[i])):
+            if not np.isfinite(hj):
+                continue
             pval = pvals[i, j]
             if not np.isfinite(pval):
                 continue
