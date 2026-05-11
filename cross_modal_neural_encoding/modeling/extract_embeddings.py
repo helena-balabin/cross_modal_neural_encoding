@@ -93,35 +93,39 @@ class _ProcessorBundle:
 
 
 # ---------------------------------------------------------------------------
-# Model-introspection helpers  (extend these for new VLM families)
+# Model-introspection helpers
 # ---------------------------------------------------------------------------
 
 
 def _get_vision_layers(model: torch.nn.Module) -> list[torch.nn.Module]:
     """Return the ordered list of vision-encoder transformer blocks."""
-    # Qwen2-VL / Qwen2.5-VL (top-level .visual)
+    enc = getattr(model, "encoder", None)
+    layers = getattr(enc, "layer", None)
+    if layers is not None:
+        return list(layers)
+    vt = getattr(getattr(model, "model", None), "vision_tower", None)
+    if vt is not None:
+        enc = getattr(vt, "encoder", None)
+        layers = getattr(enc, "layer", None)
+        if layers is not None:
+            return list(layers)
     if hasattr(model, "visual") and hasattr(model.visual, "blocks"):
         return list(model.visual.blocks)  # type: ignore[attr-defined]
-    # Qwen3.5-VL (nested under .model.visual)
     inner = getattr(model, "model", None)
     if inner is not None and hasattr(inner, "visual") and hasattr(inner.visual, "blocks"):
         return list(inner.visual.blocks)  # type: ignore[attr-defined]
-    # LLaVA-style (vision_tower wrapping a CLIP / SigLIP ViT)
     if hasattr(model, "vision_tower"):
         tower = model.vision_tower
         enc = getattr(getattr(tower, "vision_model", None), "encoder", None)
         if enc is not None and hasattr(enc, "layers"):
             return list(enc.layers)
-    # BLIP-2 / InstructBLIP
     enc = getattr(getattr(model, "vision_model", None), "encoder", None)
     if enc is not None and hasattr(enc, "layers"):
         return list(enc.layers)
-    # Some CLIP / OpenCLIP variants expose visual blocks under .vision_model.vision_model
     vm_inner = getattr(getattr(model, "vision_model", None), "vision_model", None)
     vm_enc = getattr(vm_inner, "encoder", None)
     if vm_enc is not None and hasattr(vm_enc, "layers"):
         return list(vm_enc.layers)
-    # Bare ViT (DINOv2, LeJEPA, plain timm ViT) — top-level .blocks
     if hasattr(model, "blocks"):
         return list(model.blocks)  # type: ignore[attr-defined]
     raise NotImplementedError(
@@ -136,15 +140,23 @@ def _forward_vision(
     **kwargs,
 ) -> None:
     """Run the vision-encoder forward pass (hooks capture hidden states)."""
-    if hasattr(model, "visual"):  # Qwen2-VL / Qwen2.5-VL family
+    enc = getattr(model, "encoder", None)
+    if enc is not None and hasattr(enc, "layer"):
+        model(pixel_values)
+        return
+    vt = getattr(getattr(model, "model", None), "vision_tower", None)
+    if vt is not None:
+        vt(pixel_values)
+        return
+    if hasattr(model, "visual"):
         model.visual(pixel_values, grid_thw=kwargs.get("image_grid_thw"))  # type: ignore[attr-defined]
-    elif hasattr(getattr(model, "model", None), "visual"):  # Qwen3.5-VL (nested)
+    elif hasattr(getattr(model, "model", None), "visual"):
         model.model.visual(pixel_values, grid_thw=kwargs.get("image_grid_thw"))  # type: ignore[attr-defined]
-    elif hasattr(model, "vision_tower"):  # LLaVA family
+    elif hasattr(model, "vision_tower"):
         model.vision_tower(pixel_values)  # type: ignore[attr-defined]
-    elif hasattr(model, "vision_model"):  # BLIP-2 family
+    elif hasattr(model, "vision_model"):
         model.vision_model(pixel_values)  # type: ignore[attr-defined]
-    elif hasattr(model, "blocks"):  # Bare ViT (DINOv2, LeJEPA, timm)
+    elif hasattr(model, "blocks"):
         model(pixel_values)  # type: ignore[operator]
     else:
         raise NotImplementedError(
@@ -155,29 +167,26 @@ def _forward_vision(
 
 def _get_language_model(model: torch.nn.Module) -> torch.nn.Module:
     """Return the language-model backbone (transformer decoder body)."""
-    # Most VLMs store the LLM as .model with .layers
-    if hasattr(model, "model") and hasattr(model.model, "layers"):
-        return model.model  # type: ignore[attr-defined]
-    # Qwen3.5-VL – LLM is at model.model.language_model (with .layers)
     inner = getattr(model, "model", None)
     lm_inner = getattr(inner, "language_model", None)
     if lm_inner is not None and hasattr(lm_inner, "layers"):
         return lm_inner  # type: ignore[return-value]
-    # BLIP-2 / InstructBLIP
+    dec = getattr(model, "decoder", None)
+    if dec is not None and hasattr(dec, "layers"):
+        return dec  # type: ignore[return-value]
+    if hasattr(model, "model") and hasattr(model.model, "layers"):
+        return model.model  # type: ignore[attr-defined]
     if hasattr(model, "language_model"):
         lm = model.language_model
         if hasattr(lm, "model") and hasattr(lm.model, "layers"):  # type: ignore[attr-defined]
             return lm.model  # type: ignore[attr-defined]
         return lm  # type: ignore[return-value]
-    # CLIP / OpenCLIP-style text tower
     tm = getattr(model, "text_model", None)
     if tm is not None and hasattr(tm, "encoder") and hasattr(tm.encoder, "layers"):
         return tm  # type: ignore[return-value]
-    # OPT — decoder-only LM: model.model.decoder.layers
     dec = getattr(getattr(model, "model", None), "decoder", None)
     if dec is not None and hasattr(dec, "layers"):
         return dec  # type: ignore[return-value]
-    # Bare decoder (Llama, Mistral loaded via AutoModel): model.layers
     if hasattr(model, "layers"):
         return model  # type: ignore[return-value]
     raise NotImplementedError(
@@ -186,42 +195,12 @@ def _get_language_model(model: torch.nn.Module) -> torch.nn.Module:
     )
 
 
-def _candidate_internvl_hf_variants(model_name: str) -> list[str]:
-    if "InternVL3_5" not in model_name or model_name.endswith("-HF"):
-        return []
-    base_no_stage = model_name
-    for suffix in ("-Pretrained", "-Instruct", "-MPO"):
-        if base_no_stage.endswith(suffix):
-            base_no_stage = base_no_stage[: -len(suffix)]
-            break
-    candidates = [
-        f"{model_name}-HF",
-        model_name.replace("-Pretrained", "-Pretrained-HF"),
-        model_name.replace("-Instruct", "-Instruct-HF"),
-        model_name.replace("-MPO", "-MPO-HF"),
-        base_no_stage,
-        f"{base_no_stage}-HF",
-    ]
-    # Preserve order, drop duplicates / no-op replacements.
-    deduped: list[str] = []
-    for name in candidates:
-        if name != model_name and name not in deduped:
-            deduped.append(name)
-    return deduped
-
-
 def _load_processor(
     model_name: str,
     cache_dir: str | None,
     model_type: str = "vlm",
-) -> tuple[object, str]:
-    """Load a compatible processor bundle for the requested model type.
-
-    Returns
-    -------
-    tuple
-        (processor, resolved_model_name)
-    """
+) -> object:
+    """Load a compatible processor bundle for the requested model type."""
     mode = model_type.lower()
     if mode not in {"vlm", "vision_only", "language_only"}:
         raise ValueError(f"Unknown model_type: {model_type!r}")
@@ -315,25 +294,13 @@ def _load_processor(
             )
             return None
 
-    # First try the provided model name.
     proc = _try_load(model_name)
     if proc is not None:
-        return proc, model_name
-
-    # Then try InternVL HF-format variants (needed for preprocessor_config.json).
-    for alt_name in _candidate_internvl_hf_variants(model_name):
-        logger.warning(f"Retrying processor load with HF-format checkpoint: {alt_name}")
-        proc = _try_load(alt_name)
-        if proc is not None:
-            return proc, alt_name
-
-    hint = ""
-    if mode == "vlm" and "InternVL3_5" in model_name:
-        hint = " Consider using an InternVL HF-format checkpoint."
+        return proc
 
     raise OSError(
         "Failed to load a compatible processor for "
-        f"{model_name}.{hint}"
+        f"{model_name}."
     )
 
 
@@ -662,17 +629,12 @@ def main(cfg: DictConfig) -> None:
         model_type: str = cfg.get("model_type", "vlm").lower()
 
         logger.info("Loading model & processor …")
-        processor, resolved_model_name = _load_processor(
+        processor = _load_processor(
             model_name,
             cache_dir,
             model_type=model_type,
         )
-        if resolved_model_name != model_name:
-            logger.warning(
-                "Using alternate checkpoint for processor/model loading: "
-                f"{resolved_model_name} (requested {model_name})."
-            )
-        model = _load_model(resolved_model_name, dtype, cache_dir).to(device).eval()
+        model = _load_model(model_name, dtype, cache_dir).to(device).eval()
 
         # ---- vision embeddings (unique images, then broadcast) ------------
         if model_type in ("vlm", "vision_only"):
