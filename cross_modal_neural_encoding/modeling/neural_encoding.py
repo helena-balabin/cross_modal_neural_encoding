@@ -42,7 +42,7 @@ Usage
 -----
     python -m cross_modal_neural_encoding.modeling.neural_encoding
 
-Hydra config: ``configs/neural_encoding.yaml``
+Hydra config: ``configs/modeling/neural_encoding.yaml``
 """
 
 from __future__ import annotations
@@ -71,6 +71,7 @@ from cross_modal_neural_encoding.utils import (
     load_brain_mask,
     load_brain_mask_img,
     save_voxelwise_nifti,
+    build_fmri_cache,
 )
 
 
@@ -1015,46 +1016,15 @@ def main(cfg: DictConfig) -> None:
                 )
 
         # Prepare per-modality single-trial fMRI data + modality-specific NC.
-        fmri_cache: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
-        for fmri_mod in {c["fmri_modality"] for c in conditions.values()}:
-            mod_df = events_df[events_df["modality"] == fmri_mod]
-
-            trial_indices = np.asarray(mod_df["beta_index"].values, dtype=int)
-            trial_coco_ids = np.asarray(mod_df["cocoid"].values, dtype=int)
-            trial_betas = betas[:, trial_indices].T  # (n_trials, n_voxels)
-
-            if fmri_mod not in nc_corr_by_modality_full:
-                raise KeyError(
-                    f"Modality '{fmri_mod}' missing in NC computation. "
-                    "Check design_matrix_mapping_file."
-                )
-
-            # NC arrays from full voxel space -> in-brain masked voxel space
-            nc_ceiling = nc_corr_by_modality_full[fmri_mod][brain_mask]
-
-            # Optional: keep only top X% voxels by modality-specific noise ceiling
-            n_in_brain = brain_mask.sum()
-            if nc_top_percent > 0:
-                valid_nc = np.isfinite(nc_ceiling) & (nc_ceiling > 0)
-                if valid_nc.any():
-                    cutoff = np.nanpercentile(
-                        nc_ceiling[valid_nc], 100.0 - nc_top_percent
-                    )
-                    voxel_keep = valid_nc & (nc_ceiling >= cutoff)
-                else:
-                    voxel_keep = np.isfinite(nc_ceiling)
-                nc_ceiling = nc_ceiling[voxel_keep]
-            else:
-                voxel_keep = np.ones(n_in_brain, dtype=bool)
-
-            trial_betas = trial_betas[:, voxel_keep]
-
-            fmri_cache[fmri_mod] = (trial_coco_ids, trial_betas, nc_ceiling, voxel_keep)
-            logger.info(
-                f"  fMRI {fmri_mod}: {len(trial_coco_ids)} trials "
-                f"({len(np.unique(trial_coco_ids))} stimuli, "
-                f" NC) × {trial_betas.shape[1]} voxels"
-            )
+        fmri_cache = build_fmri_cache(
+            events_df,
+            betas=betas,
+            brain_mask=brain_mask,
+            nc_corr_by_modality_full=nc_corr_by_modality_full,
+            conditions=conditions,
+            nc_top_percent=nc_top_percent,
+            log=True,
+        )
 
         # Run each encoding condition
         for cond_name, cond_cfg in tqdm(

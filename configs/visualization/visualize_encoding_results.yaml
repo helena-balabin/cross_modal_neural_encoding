@@ -43,6 +43,23 @@ group_sig_random_state: 42
 # Path to save figure (null = reports/figures/encoding_results.png)
 output_path: null
 
+# ── Multi-model aggregation outputs ───────────────────────────
+# Enable/disable per-model row layout
+plot_per_model_rows: false
+
+# Grouped model-comparison plot (one panel)
+plot_grouped_models: true
+grouped_output_path: null
+grouped_figsize: [10, 3]
+
+# Supplementary per-subject plot (mean across models)
+plot_subject_mean_across_models: true
+subjects_mean_output_path: null
+subjects_mean_figsize: [10, 3]
+
+# Share y-limits across all figures for comparability
+share_y_limits: true
+
 # ── Include panel with subject-level trajectories ─────────────
 show_subject_panel: true
 

@@ -1,8 +1,9 @@
 """Generate surface plots with vertices colored by noise ceiling percentiles.
 
-Creates visualizations of brain surface voxels with top 5%, 10%, and 15% noise
-ceiling. Loads GLMsingle betas, normalizes within runs, computes noise ceiling
-signal-to-noise ratio, and generates corresponding surface plots.
+Creates visualizations of brain surface voxels with top percentiles of noise
+ceiling (from config, default 10%, 20%, 30%). Loads GLMsingle betas, normalizes
+within runs, computes noise ceiling signal-to-noise ratio, and generates
+corresponding surface plots.
 
 Usage::
 

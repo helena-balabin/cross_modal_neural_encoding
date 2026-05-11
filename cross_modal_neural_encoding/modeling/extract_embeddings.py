@@ -16,7 +16,7 @@ Usage
 -----
     python -m cross_modal_neural_encoding.modeling.extract_embeddings
 
-Hydra config: ``configs/extract_embeddings.yaml``
+Hydra config: ``configs/modeling/extract_embeddings.yaml``
 """
 
 from __future__ import annotations
@@ -186,42 +186,155 @@ def _get_language_model(model: torch.nn.Module) -> torch.nn.Module:
     )
 
 
-def _load_processor(model_name: str, cache_dir: str | None) -> object:
-    """Load a compatible processor bundle for vision + text extraction."""
-    try:
-        proc = AutoProcessor.from_pretrained(
-            model_name,
-            trust_remote_code=True,
-            cache_dir=cache_dir,
-        )
-        # Some repos expose only a tokenizer via AutoProcessor; ensure both
-        # image + text preprocessors are available for embedding extraction.
-        if hasattr(proc, "image_processor") and hasattr(proc, "tokenizer"):
-            return proc
-        logger.warning(
-            "AutoProcessor for "
-            f"{model_name} does not expose both image_processor and tokenizer. "
-            "Falling back to AutoImageProcessor + AutoTokenizer."
-        )
-    except Exception as exc:
-        logger.warning(
-            "AutoProcessor loading failed for "
-            f"{model_name}: {type(exc).__name__}: {exc}. "
-            "Falling back to AutoImageProcessor + AutoTokenizer."
-        )
+def _candidate_internvl_hf_variants(model_name: str) -> list[str]:
+    if "InternVL3_5" not in model_name or model_name.endswith("-HF"):
+        return []
+    base_no_stage = model_name
+    for suffix in ("-Pretrained", "-Instruct", "-MPO"):
+        if base_no_stage.endswith(suffix):
+            base_no_stage = base_no_stage[: -len(suffix)]
+            break
+    candidates = [
+        f"{model_name}-HF",
+        model_name.replace("-Pretrained", "-Pretrained-HF"),
+        model_name.replace("-Instruct", "-Instruct-HF"),
+        model_name.replace("-MPO", "-MPO-HF"),
+        base_no_stage,
+        f"{base_no_stage}-HF",
+    ]
+    # Preserve order, drop duplicates / no-op replacements.
+    deduped: list[str] = []
+    for name in candidates:
+        if name != model_name and name not in deduped:
+            deduped.append(name)
+    return deduped
 
-    image_processor = AutoImageProcessor.from_pretrained(
-        model_name,
-        trust_remote_code=True,
-        cache_dir=cache_dir,
+
+def _load_processor(
+    model_name: str,
+    cache_dir: str | None,
+    model_type: str = "vlm",
+) -> tuple[object, str]:
+    """Load a compatible processor bundle for the requested model type.
+
+    Returns
+    -------
+    tuple
+        (processor, resolved_model_name)
+    """
+    mode = model_type.lower()
+    if mode not in {"vlm", "vision_only", "language_only"}:
+        raise ValueError(f"Unknown model_type: {model_type!r}")
+
+    def _try_load(name: str) -> object | None:
+        if mode == "language_only":
+            try:
+                return AutoTokenizer.from_pretrained(
+                    name,
+                    trust_remote_code=True,
+                    cache_dir=cache_dir,
+                    use_fast=False,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "AutoTokenizer loading failed for "
+                    f"{name}: {type(exc).__name__}: {exc}."
+                )
+                return None
+
+        if mode == "vision_only":
+            try:
+                return AutoImageProcessor.from_pretrained(
+                    name,
+                    trust_remote_code=True,
+                    cache_dir=cache_dir,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "AutoImageProcessor loading failed for "
+                    f"{name}: {type(exc).__name__}: {exc}. "
+                    "Retrying AutoProcessor."  # some vision models only define AutoProcessor
+                )
+            try:
+                proc = AutoProcessor.from_pretrained(
+                    name,
+                    trust_remote_code=True,
+                    cache_dir=cache_dir,
+                )
+                if hasattr(proc, "image_processor"):
+                    return proc
+                logger.warning(
+                    "AutoProcessor for "
+                    f"{name} does not expose image_processor."
+                )
+            except Exception as exc:
+                logger.warning(
+                    "AutoProcessor loading failed for "
+                    f"{name}: {type(exc).__name__}: {exc}."
+                )
+            return None
+
+        # VLM: need both image processor and tokenizer.
+        try:
+            proc = AutoProcessor.from_pretrained(
+                name,
+                trust_remote_code=True,
+                cache_dir=cache_dir,
+            )
+            if hasattr(proc, "image_processor") and hasattr(proc, "tokenizer"):
+                return proc
+            logger.warning(
+                "AutoProcessor for "
+                f"{name} does not expose both image_processor and tokenizer. "
+                "Falling back to AutoImageProcessor + AutoTokenizer."
+            )
+        except Exception as exc:
+            logger.warning(
+                "AutoProcessor loading failed for "
+                f"{name}: {type(exc).__name__}: {exc}. "
+                "Falling back to AutoImageProcessor + AutoTokenizer."
+            )
+
+        try:
+            image_processor = AutoImageProcessor.from_pretrained(
+                name,
+                trust_remote_code=True,
+                cache_dir=cache_dir,
+            )
+            tokenizer = AutoTokenizer.from_pretrained(
+                name,
+                trust_remote_code=True,
+                cache_dir=cache_dir,
+                use_fast=False,
+            )
+            return _ProcessorBundle(image_processor=image_processor, tokenizer=tokenizer)
+        except Exception as exc:
+            logger.warning(
+                "AutoImageProcessor/AutoTokenizer loading failed for "
+                f"{name}: {type(exc).__name__}: {exc}."
+            )
+            return None
+
+    # First try the provided model name.
+    proc = _try_load(model_name)
+    if proc is not None:
+        return proc, model_name
+
+    # Then try InternVL HF-format variants (needed for preprocessor_config.json).
+    for alt_name in _candidate_internvl_hf_variants(model_name):
+        logger.warning(f"Retrying processor load with HF-format checkpoint: {alt_name}")
+        proc = _try_load(alt_name)
+        if proc is not None:
+            return proc, alt_name
+
+    hint = ""
+    if mode == "vlm" and "InternVL3_5" in model_name:
+        hint = " Consider using an InternVL HF-format checkpoint."
+
+    raise OSError(
+        "Failed to load a compatible processor for "
+        f"{model_name}.{hint}"
     )
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_name,
-        trust_remote_code=True,
-        cache_dir=cache_dir,
-        use_fast=False,
-    )
-    return _ProcessorBundle(image_processor=image_processor, tokenizer=tokenizer)
 
 
 def _load_model(
@@ -545,12 +658,21 @@ def main(cfg: DictConfig) -> None:
         # model_type controls which encoders to extract:
         #   "vlm"           → both vision and text (default)
         #   "vision_only"   → vision only  (DINOv2, LeJEPA, …)
-        #   "language_only" → text only    (Llama-3.2, OPT, …)
+        #   "language_only" → text only    (Pythia, OPT, …)
         model_type: str = cfg.get("model_type", "vlm").lower()
 
         logger.info("Loading model & processor …")
-        processor = _load_processor(model_name, cache_dir)
-        model = _load_model(model_name, dtype, cache_dir).to(device).eval()
+        processor, resolved_model_name = _load_processor(
+            model_name,
+            cache_dir,
+            model_type=model_type,
+        )
+        if resolved_model_name != model_name:
+            logger.warning(
+                "Using alternate checkpoint for processor/model loading: "
+                f"{resolved_model_name} (requested {model_name})."
+            )
+        model = _load_model(resolved_model_name, dtype, cache_dir).to(device).eval()
 
         # ---- vision embeddings (unique images, then broadcast) ------------
         if model_type in ("vlm", "vision_only"):

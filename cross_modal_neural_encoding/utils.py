@@ -16,6 +16,83 @@ from loguru import logger
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Visualization Helpers
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+CONDITION_LABELS: dict[str, str] = {
+    "image_to_image": "Image → Image",
+    "image_to_text": "Image → Text",
+    "text_to_image": "Text → Image",
+    "text_to_text": "Text → Text",
+}
+
+
+def configure_plot_fonts(
+    *,
+    font_family: str = "sans-serif",
+    sans_serif: list[str] | None = None,
+) -> None:
+    """Configure matplotlib font defaults for plots."""
+    from matplotlib import rcParams
+
+    if sans_serif is None:
+        sans_serif = [
+            "Lato",
+            "Lato Thin",
+            "Carlito",
+            "DejaVu Sans",
+            "Arial",
+        ]
+
+    rcParams["font.family"] = font_family
+    rcParams["font.sans-serif"] = sans_serif
+
+
+def significance_label(p: float, alpha: float = 0.05) -> str:
+    """Return a significance annotation string for *p*."""
+    if np.isnan(p):
+        return ""
+    if p < 0.001:
+        return "***"
+    if p < 0.01:
+        return "**"
+    if p < alpha:
+        return "*"
+    return "ns"
+
+
+def signflip_pvalue_greater(
+    values: np.ndarray,
+    *,
+    n_permutations: int = 10000,
+    random_state: int = 42,
+) -> float:
+    """One-sample sign-flip permutation p-value for mean(values) > 0."""
+    vals = np.asarray(values, dtype=float)
+    vals = vals[np.isfinite(vals)]
+    n = vals.size
+    if n == 0:
+        return float("nan")
+
+    observed = float(np.mean(vals))
+
+    if n <= 16:
+        all_signs = np.array(
+            np.meshgrid(*[[-1.0, 1.0]] * n, indexing="ij")
+        ).reshape(n, -1).T
+        null_stats = np.mean(all_signs * vals[None, :], axis=1)
+        p = (np.sum(null_stats >= observed) + 1) / (null_stats.size + 1)
+        return float(p)
+
+    rng = np.random.default_rng(random_state)
+    signs = rng.choice([-1.0, 1.0], size=(n_permutations, n), replace=True)
+    null_stats = np.mean(signs * vals[None, :], axis=1)
+    p = (np.sum(null_stats >= observed) + 1) / (n_permutations + 1)
+    return float(p)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Noise Ceiling - NCSNR Framework (for single-trial data)
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -259,6 +336,65 @@ def load_design_matrix_mapping(design_mapping_file: Path) -> dict[int, str]:
     logger.info(f"  Text conditions: {text_count}, Image conditions: {image_count}")
 
     return modality_map
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# fMRI Trial Cache Helpers
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def build_fmri_cache(
+    events_df: pd.DataFrame,
+    *,
+    betas: np.ndarray,
+    brain_mask: np.ndarray,
+    nc_corr_by_modality_full: dict[str, np.ndarray],
+    conditions: dict,
+    nc_top_percent: float = 0.0,
+    log: bool = False,
+) -> dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+    """Build per-modality fMRI cache with optional NC top-percentile filtering."""
+    fmri_cache: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
+    for fmri_mod in {c["fmri_modality"] for c in conditions.values()}:
+        mod_df = events_df[events_df["modality"] == fmri_mod]
+
+        trial_indices = np.asarray(mod_df["beta_index"].values, dtype=int)
+        trial_coco_ids = np.asarray(mod_df["cocoid"].values, dtype=int)
+        trial_betas = betas[:, trial_indices].T  # (n_trials, n_voxels)
+
+        if fmri_mod not in nc_corr_by_modality_full:
+            raise KeyError(
+                f"Modality '{fmri_mod}' missing in NC computation. "
+                "Check design_matrix_mapping_file."
+            )
+
+        nc_ceiling = nc_corr_by_modality_full[fmri_mod][brain_mask]
+
+        n_in_brain = brain_mask.sum()
+        if nc_top_percent > 0:
+            valid_nc = np.isfinite(nc_ceiling) & (nc_ceiling > 0)
+            if valid_nc.any():
+                cutoff = np.nanpercentile(
+                    nc_ceiling[valid_nc], 100.0 - nc_top_percent
+                )
+                voxel_keep = valid_nc & (nc_ceiling >= cutoff)
+            else:
+                voxel_keep = np.isfinite(nc_ceiling)
+            nc_ceiling = nc_ceiling[voxel_keep]
+        else:
+            voxel_keep = np.ones(n_in_brain, dtype=bool)
+
+        trial_betas = trial_betas[:, voxel_keep]
+        fmri_cache[fmri_mod] = (trial_coco_ids, trial_betas, nc_ceiling, voxel_keep)
+
+        if log:
+            logger.info(
+                f"  fMRI {fmri_mod}: {len(trial_coco_ids)} trials "
+                f"({len(np.unique(trial_coco_ids))} stimuli, "
+                f" NC) × {trial_betas.shape[1]} voxels"
+            )
+
+    return fmri_cache
 
 
 # ═══════════════════════════════════════════════════════════════════════════

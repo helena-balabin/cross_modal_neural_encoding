@@ -1,9 +1,9 @@
 """Visualize residual neural encoding results (§3.3).
 
 Produces a grouped bar chart comparing:
-  - Standard (unablated) encoding accuracy
-  - Structure-residualised encoding accuracy
-  - Permuted-s control (optional)
+    - Standard (unablated) encoding accuracy
+    - Structure-residualised encoding accuracy
+    - Permuted-s control (optional)
 
 for each of the four 2×2 conditions.  The expected signature of compositional
 structure as the carrier of cross-modal alignment is a **selective drop** in
@@ -23,19 +23,17 @@ from pathlib import Path
 
 import hydra
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 import numpy as np
 import pandas as pd
 from loguru import logger
-from matplotlib import rcParams
 from omegaconf import DictConfig
 
 from cross_modal_neural_encoding.config import FIGURES_DIR, PROJ_ROOT
-from cross_modal_neural_encoding.visualization.visualize_encoding_results import (
+from cross_modal_neural_encoding.utils import (
     CONDITION_LABELS,
-    SUBJECT_PALETTE,
+    configure_plot_fonts,
     significance_label,
-    _signflip_pvalue_greater,
+    signflip_pvalue_greater,
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -47,8 +45,7 @@ COLOR_STANDARD = "#7EAEDB"   # blue — unablated baseline
 COLOR_RESIDUAL = "#E88989"   # red  — structure residualised
 COLOR_PERMUTED = "#EFBF63"   # amber — permuted-s control
 
-rcParams["font.family"] = "sans-serif"
-rcParams["font.sans-serif"] = ["Lato", "Carlito", "DejaVu Sans", "Arial"]
+configure_plot_fonts()
 
 METRIC = "mean_normalized_r"
 
@@ -71,12 +68,12 @@ def _condition_means(
     out: dict[str, np.ndarray] = {}
     for cond in conditions:
         vals = df.loc[df["condition"] == cond, metric].values.astype(float)
-        out[cond] = vals
+        out[cond] = np.array(vals)
     return out
 
 
 def _pvalue(vals: np.ndarray) -> float:
-    return _signflip_pvalue_greater(vals[np.isfinite(vals)])
+    return signflip_pvalue_greater(vals[np.isfinite(vals)])
 
 
 # ═══════════════════════════════════════════════════════════════════════════

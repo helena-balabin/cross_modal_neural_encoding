@@ -28,6 +28,11 @@ device: "cuda"
 dtype: "bfloat16"               # float16 | bfloat16 | float32
 
 # ── Extraction settings ──────────────────────────────────────
+# model_type controls which encoders to extract:
+#   "vlm"           → both vision and text (default)
+#   "vision_only"   → vision only  (DINOv2, iJEPA, …)
+#   "language_only" → text only    (Pythia, OPT, …)
+model_type: "vlm"
 batch_size: 8                   # text-encoder batch size
 max_length: 512                 # max tokenizer length
 pooling: "mean"                 # mean | last  (over tokens / patches)

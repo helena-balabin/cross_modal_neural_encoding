@@ -16,14 +16,14 @@ We evaluate a range of vision-language models spanning different architectures, 
 - **Sizes**: 1B, 2B, 4B, and 8B parameters
 - **Architecture**: Vision-language model with joint training on image-text pairs
 - **Layer selection**: Vision encoder layer 6, text encoder layer 12 (by default)
-- **Source**: Hugging Face (`OpenGVLab/InternVL3-1B`, etc.)
+- **Source**: Hugging Face (`OpenGVLab/InternVL3_5-1B`, etc.)
 
 ### OpenCLIP
 
 - **Sizes**: Base and Large variants
 - **Architecture**: Contrastive language-image pretraining model
 - **Layer selection**: Vision transformer layer 6, text encoder layer 12 (by default)
-- **Source**: Hugging Face (`laion/CLIP-ViT-B-32-laion2B-s34B-b79K`, etc.)
+- **Source**: Hugging Face (`laion/CLIP-ViT-H-14-laion2B-s32B-b79K`, etc.)
 
 ## Unimodal Models
 
@@ -36,23 +36,23 @@ To dissociate effects of joint vision-language training from those of unimodal p
 - **Sizes**: Base and Large scales
 - **Architecture**: Self-supervised vision transformer trained on image data
 - **Layer selection**: Transformer block 6 (by default)
-- **Source**: Hugging Face (`facebook/dinov2-base`, etc.)
+- **Source**: Hugging Face (`facebook/dinov2-giant`, etc.)
 
-#### LeJEPA
+#### iJEPA
 
 - **Sizes**: Base and Large scales
 - **Architecture**: Vision encoder trained with latent embedding Jacobian prediction
 - **Layer selection**: Transformer block 6 (by default)
-- **Source**: Hugging Face (`le-je-pa/le-je-pa-base`, etc.)
+- **Source**: Hugging Face (`facebook/ijepa_vitg16_22k`, etc.)
 
 ### Language Encoders
 
-#### Llama-3.2
+#### Pythia
 
-- **Sizes**: 1B and 3B parameters
+- **Sizes**: 1.4B and 6.9B parameters
 - **Architecture**: Causal language model trained on text data
 - **Layer selection**: Transformer block 12 (by default)
-- **Source**: Hugging Face (`meta-llama/Llama-3.2-1B`, etc.)
+- **Source**: Hugging Face (`EleutherAI/pythia-1.4b`, `EleutherAI/pythia-6.9b`)
 
 #### OPT
 
