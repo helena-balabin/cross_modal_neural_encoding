@@ -79,6 +79,16 @@ configure_plot_fonts()
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _model_category_rank(model_label: str) -> tuple[int, str]:
+    """Sort key: VLM first, then vision-only, then text-only."""
+    label = model_label.lower()
+    if any(tag in label for tag in ("clip", "vlm", "qwen", "intern")):
+        return (0, model_label)
+    if any(tag in label for tag in ("dinov2", "ijepa", "dino")):
+        return (1, model_label)
+    return (2, model_label)
+
+
 def load_aggregated(path: str | Path) -> pd.DataFrame:
     """Load a multi-header aggregated CSV produced by the encoding pipeline."""
     df = pd.read_csv(path, header=[0, 1], index_col=0)
@@ -615,6 +625,11 @@ def plot_grouped_model_means(
         logger.warning("Grouped model plot requires at least two models.")
         return
 
+    model_results = sorted(
+        model_results,
+        key=lambda item: _model_category_rank(item.get("model_label", "")),
+    )
+
     all_conditions: set[str] = set()
     for item in model_results:
         df = item["aggregated_df"]
@@ -678,6 +693,10 @@ def plot_grouped_model_means(
     else:
         y_min, y_max = y_limits
 
+    y_span = y_max - y_min
+    y_na_base = min(max(0.0, y_min), y_max)
+    y_na = y_na_base + (0.02 * y_span if y_span > 0 else 0.0)
+
     for i, label in enumerate(model_labels):
         ax.bar(
             x + offsets[i],
@@ -690,6 +709,21 @@ def plot_grouped_model_means(
             label=label,
             zorder=3,
         )
+
+        # Mark missing values with "na" for conditions that don't apply.
+        for j, xj in enumerate(x + offsets[i]):
+            if np.isfinite(values[i, j]):
+                continue
+            ax.text(
+                xj,
+                y_na,
+                "na",
+                ha="center",
+                va="bottom",
+                fontsize=8.0 * font_scale,
+                color="#5C5C5C",
+                zorder=4,
+            )
 
         # Significance annotations per model-condition (if available).
         for j, (xj, hj) in enumerate(zip(x + offsets[i], values[i])):
