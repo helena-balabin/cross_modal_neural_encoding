@@ -16,7 +16,7 @@ We evaluate a range of vision-language models spanning different architectures, 
 - **Sizes**: 1B, 2B, 4B, and 8B parameters
 - **Architecture**: Vision-language model with joint training on image-text pairs
 - **Layer selection**: Vision encoder layer 6, text encoder layer 12 (by default)
-- **Source**: Hugging Face (`OpenGVLab/InternVL3_5-1B`, etc.)
+- **Source**: Hugging Face (`OpenGVLab/InternVL3_5-1B-HF`, etc.)
 
 ### OpenCLIP
 
