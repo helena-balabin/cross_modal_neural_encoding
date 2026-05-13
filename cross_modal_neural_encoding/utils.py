@@ -21,10 +21,10 @@ from loguru import logger
 
 
 CONDITION_LABELS: dict[str, str] = {
-    "image_to_image": "Image → Image",
-    "image_to_text": "Image → Text",
-    "text_to_image": "Text → Image",
-    "text_to_text": "Text → Text",
+    "image_to_image": "Image embeddings\n→ Image fMRI",
+    "image_to_text": "Image embeddings\n→ Text fMRI",
+    "text_to_image": "Text embeddings\n→ Image fMRI",
+    "text_to_text": "Text embeddings\n→ Text fMRI",
 }
 
 

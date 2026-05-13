@@ -2,7 +2,7 @@
 
 # Model configuration
 model: "Qwen/Qwen3.5-0.8B"
-layer: 6  # Layer to extract embeddings from
+layer: "auto"  # Auto-pick from available embedding layers
 
 # Data paths
 embeddings_dir: "models/embeddings"
@@ -10,11 +10,19 @@ output_dir: "results/structural_probing"
 
 # Analysis parameters
 n_outer_folds: 5  # Number of outer CV folds for R² evaluation (averaged across folds)
-n_inner_folds: 5  # Number of inner CV folds for hyperparameter selection
+n_inner_folds: 5  # Number of inner CV folds for hyperparameter selection (averaged across folds)
+train_ratio: 0.8
+random_seed: 0
 
 # Ridge regression parameters
-alpha_grid: "${python:np.logspace(-3, 3, 7)"  # Grid of regularization strengths
+alpha_grid: [0.001, 0.01, 0.1, 1, 10, 100, 1000]  # Grid of regularization strengths
 
-# Dataset configuration
-dataset_name: "helena-balabin/coco_a_preprocessed_all"
-split: "train"
+# Dataset configuration (VG/COCO merged graphs)
+dataset_hf_identifier: "helena-balabin/vg_coco_graphs_merged"
+dataset_split: "train"
+coco_id_column: "coco_id"
+
+# Graph columns and targets
+text_graph_columns: ["amr_graphs", "dependency_graphs"]
+image_graph_columns: ["image_graphs", "action_image_graphs", "spatial_image_graphs"]
+graph_targets: ["num_nodes", "num_edges", "depth"]

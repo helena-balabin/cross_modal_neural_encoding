@@ -27,11 +27,12 @@ embeddings_dir: "/scratch/hbalabin/coco"
 output_dir: "outputs/residual_encoding"
 
 # ── Structural targets ────────────────────────────────────────
-# HuggingFace dataset providing AMR and action graph properties.
-# These are used only as a COCO-ID lookup: W* is fit exclusively on the
-# training split of the 252 fMRI study stimuli (no leakage).
-dataset_name: "helena-balabin/coco_a_preprocessed_all"
+# Graph dataset matching structural probing analysis.
+dataset_hf_identifier: "helena-balabin/vg_coco_graphs_merged"
 dataset_split: "train"
+coco_id_column: "cocoid"
+text_graph_column: "amr_graphs"
+vision_graph_column: "action_image_graphs"
 
 # ── Residualisation ───────────────────────────────────────────
 # Ridge α for the s → e regression (W* in Eq. 1 of the paper).

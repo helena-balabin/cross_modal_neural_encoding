@@ -50,15 +50,29 @@ SUBJECT_PALETTE = [
     "#E39DC1",  # darker pastel pink   — sub-08
     "#93C8C8",  # darker pastel teal   — sub-09
 ]
-WARM_MODEL_PALETTE = [
-    "#F4A8A8",  # warm pastel red
-    "#F7D08A",  # warm pastel amber
-    "#E9AF84",  # warm pastel orange
-    "#E39DC1",  # warm pastel pink
-    "#F2B6A0",  # warm pastel peach
-    "#F6C5A8",  # warm pastel apricot
-    "#F7B7B2",  # warm pastel salmon
-    "#F6C9D1",  # warm pastel rose
+VLM_MODEL_PALETTE = [
+    "#F5A3A3",  # soft red
+    "#E88989",  # dusty red
+    "#D96F6F",  # muted crimson
+    "#F2B6A0",  # warm peach
+    "#F7B7B2",  # salmon
+    "#E39DC1",  # pink-rose
+]
+VISION_MODEL_PALETTE = [
+    "#C3A1D6",  # warm lavender
+    "#A988C8",  # warm soft purple
+    "#906EBA",  # muted warm violet
+    "#D0B4E6",  # light warm lilac
+    "#B39AD8",  # warm pale purple
+    "#9B7CCF",  # warm medium purple
+]
+TEXT_MODEL_PALETTE = [
+    "#F2D07B",  # ochre
+    "#E8C05A",  # warm yellow
+    "#D9AE3F",  # goldenrod
+    "#F4D58D",  # pale ochre
+    "#EFBF63",  # amber
+    "#F7D08A",  # soft yellow
 ]
 COLD_SUBJECT_PALETTE = [
     "#A8C8E8",  # cold pastel blue
@@ -375,7 +389,12 @@ def _plot_model_row(
 
     # ── Axes formatting ───────────────────────────────────────────────────
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=12 * font_scale)  # type: ignore
+    ax.set_xticklabels(
+        labels,
+        fontsize=10.5 * font_scale,
+        rotation=20,
+        ha="right",
+    )  # type: ignore
     ax.tick_params(axis="y", labelsize=12 * font_scale)
     if is_normalized_metric:
         ax.set_ylabel(
@@ -506,10 +525,15 @@ def _plot_model_row(
             )
 
         ax_subject.set_xticks(x)
-        ax_subject.set_xticklabels(labels, fontsize=12 * font_scale)
+        ax_subject.set_xticklabels(
+            labels,
+            fontsize=10.5 * font_scale,
+            rotation=20,
+            ha="right",
+        )
         ax_subject.tick_params(axis="y", labelsize=12 * font_scale)
         ax_subject.set_title(
-            f"{model_label} • Per-subject grouped (n={subject_table.shape[0]})",
+            f"{model_label}, per-subject grouped (n={subject_table.shape[0]})",
             fontsize=15 * font_scale,
             fontweight="bold",
         )
@@ -675,7 +699,19 @@ def plot_grouped_model_means(
     total_width = 0.82
     bar_w = min(0.16, total_width / max(n_models, 1))
     offsets = (np.arange(n_models) - (n_models - 1) / 2.0) * bar_w
-    colors = [WARM_MODEL_PALETTE[i % len(WARM_MODEL_PALETTE)] for i in range(n_models)]
+    category_palettes = {
+        0: VLM_MODEL_PALETTE,
+        1: VISION_MODEL_PALETTE,
+        2: TEXT_MODEL_PALETTE,
+    }
+    category_counts = {0: 0, 1: 0, 2: 0}
+    colors: list[str] = []
+    for label in model_labels:
+        category = _model_category_rank(label)[0]
+        palette = category_palettes.get(category, VLM_MODEL_PALETTE)
+        idx = category_counts.get(category, 0) % len(palette)
+        colors.append(palette[idx])
+        category_counts[category] = category_counts.get(category, 0) + 1
 
     if y_limits is None:
         finite_values = values[np.isfinite(values)]
@@ -759,20 +795,25 @@ def plot_grouped_model_means(
         )
 
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=12 * font_scale)
+    ax.set_xticklabels(
+        labels,
+        fontsize=10.5 * font_scale,
+        rotation=20,
+        ha="right",
+    )
     ax.tick_params(axis="y", labelsize=12 * font_scale)
     if is_normalized_metric:
         ax.set_ylabel("Normalized performance\n(r / NC)", fontsize=11.5 * font_scale)
     else:
         ax.set_ylabel("Pearson correlation", fontsize=11.5 * font_scale)
     ax.set_title(
-        "Model comparison • Group means",
+        "Model Comparison Based on Group Means",
         fontsize=15 * font_scale,
         fontweight="bold",
     )
     ax.axhline(y=0, color="black", linewidth=0.5, zorder=1)
     ax.grid(axis="y", alpha=0.3, zorder=0)
-    ax.legend(loc="upper right", fontsize=10.5 * font_scale, ncol=2)
+    ax.legend(loc="upper right", fontsize=8.5 * font_scale, ncol=3)
     ax.margins(x=0.03)
 
     if is_normalized_metric and compress_normalized_axis:
@@ -921,7 +962,12 @@ def plot_subject_mean_across_models(
         )
 
     ax.set_xticks(x)
-    ax.set_xticklabels([CONDITION_LABELS.get(c, c) for c in conditions], fontsize=12 * font_scale)
+    ax.set_xticklabels(
+        [CONDITION_LABELS.get(c, c) for c in conditions],
+        fontsize=10.5 * font_scale,
+        rotation=20,
+        ha="right",
+    )
     ax.tick_params(axis="y", labelsize=12 * font_scale)
     if is_normalized_metric:
         ax.set_ylabel("Normalized performance\n(r / NC)", fontsize=11.5 * font_scale)

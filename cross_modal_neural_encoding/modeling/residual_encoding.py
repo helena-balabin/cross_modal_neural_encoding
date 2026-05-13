@@ -51,7 +51,6 @@ from cross_modal_neural_encoding.modeling.neural_encoding import (
     load_condition_to_cocoid_modality,
     run_encoding,
 )
-from cross_modal_neural_encoding.modeling.structural_probing import load_structural_targets
 from cross_modal_neural_encoding.utils import (
     normalize_betas_per_run,
     compute_nc_by_modality,
@@ -61,6 +60,63 @@ from cross_modal_neural_encoding.utils import (
     save_voxelwise_nifti,
     build_fmri_cache,
 )
+
+
+def load_structural_targets(
+    dataset_name: str,
+    split: str,
+    coco_id_column: str,
+    text_graph_column: str,
+    vision_graph_column: str,
+) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+    """Load structural target properties from a graph-annotated dataset.
+
+    Returns AMR-like (text) and action-like (vision) targets derived from
+    graph dictionaries, matching the structural probing analysis.
+    """
+    from datasets import load_dataset
+
+    logger.info(f"Loading structural targets from dataset {dataset_name}, split {split}")
+    dataset = load_dataset(dataset_name, split=split)
+
+    if coco_id_column not in dataset.column_names:
+        raise KeyError(
+            f"COCO ID column '{coco_id_column}' not found in dataset."
+        )
+
+    coco_ids = np.array([int(cid) for cid in dataset[coco_id_column]])
+
+    def _get_graph_metric(graph_dict: object, key: str) -> int | float:
+        if not isinstance(graph_dict, dict):
+            return 0
+        return graph_dict.get(key, 0)
+
+    text_graphs = dataset[text_graph_column]
+    vision_graphs = dataset[vision_graph_column]
+
+    targets = {
+        "amr_n_nodes": np.array([
+            _get_graph_metric(g, "num_nodes") for g in text_graphs
+        ]),
+        "amr_n_edges": np.array([
+            _get_graph_metric(g, "num_edges") for g in text_graphs
+        ]),
+        "amr_graph_depth": np.array([
+            _get_graph_metric(g, "depth") for g in text_graphs
+        ]),
+        "coco_a_nodes": np.array([
+            _get_graph_metric(g, "num_nodes") for g in vision_graphs
+        ]),
+        "coco_a_edges": np.array([
+            _get_graph_metric(g, "num_edges") for g in vision_graphs
+        ]),
+        "coco_a_graph_depth": np.array([
+            _get_graph_metric(g, "depth") for g in vision_graphs
+        ]),
+    }
+
+    logger.info(f"Loaded structural targets for {len(coco_ids)} stimuli")
+    return coco_ids, targets
 
 
 @hydra.main(
@@ -104,9 +160,15 @@ def main(cfg: DictConfig) -> None:
     logger.info("Loading structural targets …")
     target_coco_ids, struct_targets = load_structural_targets(
         dataset_name=cfg.get(
-            "dataset_name", "helena-balabin/coco_a_preprocessed_all"
+            "dataset_hf_identifier",
+            cfg.get("dataset_name", "helena-balabin/vg_coco_graphs_merged"),
         ),
         split=cfg.get("dataset_split", "train"),
+        coco_id_column=cfg.get("coco_id_column", "cocoid"),
+        text_graph_column=cfg.get("text_graph_column", "amr_graphs"),
+        vision_graph_column=cfg.get(
+            "vision_graph_column", "action_image_graphs"
+        ),
     )
 
     # -- load & PCA embeddings (shared across subjects) ----------------------

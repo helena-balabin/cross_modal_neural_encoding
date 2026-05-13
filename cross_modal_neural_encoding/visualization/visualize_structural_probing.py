@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -22,9 +21,24 @@ import pandas as pd
 from loguru import logger
 
 from cross_modal_neural_encoding.config import FIGURES_DIR, PROJ_ROOT
+from cross_modal_neural_encoding.utils import (
+    configure_plot_fonts,
+    significance_label,
+    signflip_pvalue_greater,
+)
+from cross_modal_neural_encoding.visualization.visualize_encoding_results import (
+    TEXT_MODEL_PALETTE,
+    VISION_MODEL_PALETTE,
+    VLM_MODEL_PALETTE,
+    _model_category_rank,
+)
+
+configure_plot_fonts()
 
 
-def load_structural_probing_results(results_dir: Path) -> dict[str, pd.DataFrame]:
+def load_structural_probing_results(
+    results_dir: Path,
+) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
     """Load structural probing results from CSV files in the results directory.
 
     Parameters
@@ -37,13 +51,14 @@ def load_structural_probing_results(results_dir: Path) -> dict[str, pd.DataFrame
     dict[str, pd.DataFrame]
         Dictionary mapping model names to their results DataFrames
     """
-    results = {}
+    results: dict[str, pd.DataFrame] = {}
+    folds: dict[str, pd.DataFrame] = {}
 
     if not results_dir.exists():
         raise FileNotFoundError(f"Results directory not found: {results_dir}")
 
-    # Find all CSV files in the results directory
-    csv_files = list(results_dir.glob("*_results.csv"))
+    # Find all structural probing results CSV files (recursive)
+    csv_files = list(results_dir.rglob("structural_probing_results.csv"))
 
     if not csv_files:
         raise FileNotFoundError(f"No results CSV files found in: {results_dir}")
@@ -58,15 +73,83 @@ def load_structural_probing_results(results_dir: Path) -> dict[str, pd.DataFrame
             logger.info(f"Loaded results for model {model_name} from {csv_file}")
         except Exception as e:
             logger.warning(f"Failed to load {csv_file}: {e}")
+            continue
+
+        fold_file = csv_file.parent / "structural_probing_folds.csv"
+        if fold_file.exists():
+            try:
+                folds[model_name] = pd.read_csv(fold_file)
+                logger.info(
+                    f"Loaded fold scores for model {model_name} from {fold_file}"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to load {fold_file}: {e}")
 
     if not results:
         raise ValueError("No valid results files could be loaded")
 
-    return results
+    return results, folds
 
 
-def create_structural_probing_plots(results: dict[str, pd.DataFrame],
-                                    output_dir: Path) -> None:
+def _collect_property_targets(prefix: str) -> dict[str, str]:
+    """Map property name to full column key for a given prefix."""
+    return {
+        "Nodes": f"{prefix}_n_nodes",
+        "Edges": f"{prefix}_n_edges",
+        "Depth": f"{prefix}_graph_depth",
+    }
+
+
+def _extract_model_scores(
+    results: dict[str, pd.DataFrame],
+    target_map: dict[str, str],
+) -> tuple[list[str], np.ndarray, list[str]]:
+    """Return model names, score matrix (models x groups), and group labels."""
+    model_names = list(results.keys())
+    group_labels = list(target_map.keys()) + ["Average"]
+    scores = np.full((len(model_names), len(group_labels)), np.nan, dtype=float)
+
+    for i, model in enumerate(model_names):
+        df = results[model]
+        for j, prop in enumerate(target_map.keys()):
+            col = target_map[prop]
+            if col in df.columns:
+                scores[i, j] = float(df.iloc[0][col])
+        # Average across available properties
+        scores[i, -1] = np.nanmean(scores[i, : len(target_map)])
+
+    return model_names, scores, group_labels
+
+
+def _extract_fold_scores(
+    folds: dict[str, pd.DataFrame],
+    target_map: dict[str, str],
+) -> dict[str, dict[str, np.ndarray]]:
+    """Return fold scores per model and property for significance testing."""
+    fold_scores: dict[str, dict[str, np.ndarray]] = {}
+    for model, df in folds.items():
+        model_scores: dict[str, np.ndarray] = {}
+        for prop, col in target_map.items():
+            if "target" not in df.columns or "r2" not in df.columns:
+                continue
+            vals = df.loc[df["target"] == col, "r2"].to_numpy(dtype=float)
+            if vals.size:
+                model_scores[prop] = vals
+        # Average across properties per fold (if available)
+        if model_scores:
+            min_len = min((len(v) for v in model_scores.values()), default=0)
+            if min_len > 0:
+                stacked = np.vstack([v[:min_len] for v in model_scores.values()])
+                model_scores["Average"] = np.nanmean(stacked, axis=0)
+        fold_scores[model] = model_scores
+    return fold_scores
+
+
+def create_structural_probing_plots(
+    results: dict[str, pd.DataFrame],
+    folds: dict[str, pd.DataFrame],
+    output_dir: Path,
+) -> None:
     """Create visualization plots for structural probing results.
 
     Creates two types of plots:
@@ -82,121 +165,125 @@ def create_structural_probing_plots(results: dict[str, pd.DataFrame],
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Extract all target names from the results
-    all_targets = set()
-    for df in results.values():
-        all_targets.update(df.columns)
+    if not results:
+        logger.warning("No structural probing results provided.")
+        return
 
-    # Separate vision and text targets
-    vision_targets = [t for t in all_targets if t.startswith('vision_')]
-    text_targets = [t for t in all_targets if t.startswith('text_')]
+    logger.info("Creating grouped bar plots...")
 
-    # Sort targets for consistent ordering
-    vision_targets.sort()
-    text_targets.sort()
+    # Prepare target maps
+    text_targets = _collect_property_targets("text_amr")
+    vision_targets = _collect_property_targets("vision_coco_a")
 
-    # Create bar plots
-    logger.info("Creating bar plots...")
+    # Extract data
+    model_names, text_scores, text_groups = _extract_model_scores(
+        results, text_targets
+    )
+    _, vision_scores, vision_groups = _extract_model_scores(
+        results, vision_targets
+    )
 
-    # Plot for vision targets
-    if vision_targets:
-        fig, ax = plt.subplots(figsize=(10, 6))
+    # Fold-based significance (optional)
+    text_fold_scores = _extract_fold_scores(folds, text_targets)
+    vision_fold_scores = _extract_fold_scores(folds, vision_targets)
 
-        # Prepare data
-        model_names = list(results.keys())
-        n_models = len(model_names)
-        n_targets = len(vision_targets)
+    n_models = len(model_names)
+    category_palettes = {
+        0: VLM_MODEL_PALETTE,
+        1: VISION_MODEL_PALETTE,
+        2: TEXT_MODEL_PALETTE,
+    }
+    category_counts = {0: 0, 1: 0, 2: 0}
+    colors: list[str] = []
+    for label in model_names:
+        category = _model_category_rank(label)[0]
+        palette = category_palettes.get(category, VLM_MODEL_PALETTE)
+        idx = category_counts.get(category, 0) % len(palette)
+        colors.append(palette[idx])
+        category_counts[category] = category_counts.get(category, 0) + 1
+    bar_w = min(0.16, 0.82 / max(n_models, 1))
 
-        # Create grouped bar plot
-        x = np.arange(n_models)
-        width = 0.8 / n_targets  # Width of each bar
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
+    panels = [
+        (axes[0], "AMR graphs (text)", text_scores, text_groups, text_fold_scores),
+        (
+            axes[1],
+            "COCO-A graphs (vision)",
+            vision_scores,
+            vision_groups,
+            vision_fold_scores,
+        ),
+    ]
 
-        # Colors for different targets
-        colors = plt.cm.get_cmap('Set3')(np.linspace(0, 1, n_targets))
+    for ax, title, scores, groups, fold_scores in panels:
+        x = np.arange(len(groups))
+        offsets = (np.arange(n_models) - (n_models - 1) / 2.0) * bar_w
 
-        # Plot each target as a group of bars
-        for i, target in enumerate(vision_targets):
-            scores = []
-            for model in model_names:
-                if target in results[model].columns:
-                    # Take the first (and usually only) row
-                    score = results[model].iloc[0][target]
-                else:
-                    score = np.nan
-                scores.append(score)
+        if not np.isfinite(scores).any():
+            ax.text(
+                0.5,
+                0.5,
+                "No data available",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+                fontsize=11,
+            )
+            ax.set_axis_off()
+            continue
 
-            # Plot bars for this target
-            ax.bar(x + (i - n_targets/2 + 0.5) * width,
-                    scores,
-                    width,
-                    label=target.replace('vision_', '').replace('_', ' ').title(),
-                    color=colors[i],
-                    alpha=0.8)
+        for i, model in enumerate(model_names):
+            ax.bar(
+                x + offsets[i],
+                scores[i],
+                width=bar_w * 0.95,
+                color=colors[i],
+                edgecolor="#4A4A4A",
+                linewidth=0.5,
+                alpha=0.9,
+                label=model if ax is axes[0] else None,
+                zorder=3,
+            )
 
-        ax.set_xlabel('Model')
-        ax.set_ylabel('R² Score')
-        ax.set_title('Vision Embedding Structural Probing Results')
+            # Significance annotations if fold scores available
+            model_fold_scores = fold_scores.get(model, {})
+            for j, group in enumerate(groups):
+                if group not in model_fold_scores:
+                    continue
+                pval = signflip_pvalue_greater(model_fold_scores[group])
+                sig = significance_label(pval)
+                if not sig:
+                    continue
+                val = scores[i, j]
+                if not np.isfinite(val):
+                    continue
+                y_pad = 0.02 * (np.nanmax(scores) - np.nanmin(scores) + 1e-6)
+                ax.text(
+                    x[j] + offsets[i],
+                    val + y_pad,
+                    sig,
+                    ha="center",
+                    va="bottom",
+                    fontsize=10,
+                    fontweight="bold",
+                    color="black" if sig == "ns" else "darkred",
+                    zorder=4,
+                )
+
+        ax.set_title(title, fontsize=12, fontweight="bold")
         ax.set_xticks(x)
-        ax.set_xticklabels(model_names, rotation=45)
-        ax.legend()
-        ax.grid(True, alpha=0.3)
+        ax.set_xticklabels(groups, rotation=0)
+        ax.grid(axis="y", alpha=0.3, zorder=0)
+        ax.axhline(y=0, color="black", linewidth=0.5, zorder=1)
 
-        # Adjust layout and save
-        plt.tight_layout()
-        output_path = output_dir / "structural_probing_vision.png"
-        plt.savefig(output_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        logger.success(f"Saved vision probing plot to {output_path}")
+    axes[0].set_ylabel("R² Score")
+    axes[0].legend(loc="upper right", fontsize=9)
 
-    # Plot for text targets
-    if text_targets:
-        fig, ax = plt.subplots(figsize=(10, 6))
-
-        # Prepare data
-        model_names = list(results.keys())
-        n_models = len(model_names)
-        n_targets = len(text_targets)
-
-        # Create grouped bar plot
-        x = np.arange(n_models)
-        width = 0.8 / n_targets  # Width of each bar
-
-        # Colors for different targets
-        colors = plt.cm.get_cmap('Set2')(np.linspace(0, 1, n_targets))
-
-        # Plot each target as a group of bars
-        for i, target in enumerate(text_targets):
-            scores = []
-            for model in model_names:
-                if target in results[model].columns:
-                    # Take the first (and usually only) row
-                    score = results[model].iloc[0][target]
-                else:
-                    score = np.nan
-                scores.append(score)
-
-            # Plot bars for this target
-            ax.bar(x + (i - n_targets/2 + 0.5) * width,
-                    scores,
-                    width,
-                    label=target.replace('text_', '').replace('_', ' ').title(),
-                    color=colors[i],
-                    alpha=0.8)
-
-        ax.set_xlabel('Model')
-        ax.set_ylabel('R² Score')
-        ax.set_title('Text Embedding Structural Probing Results')
-        ax.set_xticks(x)
-        ax.set_xticklabels(model_names, rotation=45)
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-
-        # Adjust layout and save
-        plt.tight_layout()
-        output_path = output_dir / "structural_probing_text.png"
-        plt.savefig(output_path, dpi=300, bbox_inches='tight')
-        plt.close()
-        logger.success(f"Saved text probing plot to {output_path}")
+    plt.tight_layout()
+    output_path = output_dir / "structural_probing_grouped.png"
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    logger.success(f"Saved grouped structural probing plot to {output_path}")
 
     # Create correlation heatmaps if we have multiple models
     if len(results) > 1:
@@ -301,12 +388,12 @@ def main(results_dir: str | Path, output_dir: str | Path | None = None) -> None:
     logger.info(f"Loading structural probing results from {results_dir}")
 
     # Load results
-    results = load_structural_probing_results(results_dir)
+    results, folds = load_structural_probing_results(results_dir)
 
     logger.info(f"Creating visualizations and saving to {output_dir}")
 
     # Create plots
-    create_structural_probing_plots(results, output_dir)
+    create_structural_probing_plots(results, folds, output_dir)
 
     logger.success("Structural probing visualization complete!")
 

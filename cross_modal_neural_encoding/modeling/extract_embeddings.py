@@ -40,6 +40,7 @@ from transformers import (
     AutoProcessor,
     AutoTokenizer,
 )
+from datasets import load_dataset
 
 from cross_modal_neural_encoding.config import PROJ_ROOT
 
@@ -576,11 +577,35 @@ def main(cfg: DictConfig) -> None:
     )
 
     # -- load metadata ------------------------------------------------------
-    logger.info(f"Loading metadata from {metadata_path}")
     image_filename_col: str = cfg.get("image_filename_column", "filepath")
     coco_id_col: str = cfg.get("coco_id_column", "cocoid_x")
-    usecols = [cfg.text_column, image_filename_col, coco_id_col]
-    df = pd.read_csv(metadata_path, usecols=usecols)
+    dataset_name = cfg.get("dataset_hf_identifier", None)
+    if dataset_name:
+        dataset_split = cfg.get("dataset_split", "train")
+        dataset_cache_dir = cfg.get("dataset_cache_dir", None)
+        logger.info(
+            f"Loading metadata from dataset {dataset_name} (split={dataset_split})"
+        )
+        dataset = load_dataset(
+            dataset_name,
+            split=dataset_split,
+            cache_dir=dataset_cache_dir,
+        )
+        df = dataset.to_pandas()
+        missing_cols = [
+            c for c in (cfg.text_column, image_filename_col, coco_id_col) if c not in df.columns
+        ]
+        if missing_cols:
+            raise KeyError(
+                f"Missing columns in dataset: {missing_cols}"
+            )
+        if cfg.get("drop_empty_text", True):
+            df[cfg.text_column] = df[cfg.text_column].astype(str)
+            df = df[df[cfg.text_column].str.strip() != ""].reset_index(drop=True)
+    else:
+        logger.info(f"Loading metadata from {metadata_path}")
+        usecols = [cfg.text_column, image_filename_col, coco_id_col]
+        df = pd.read_csv(metadata_path, usecols=usecols)
     texts: list[str] = df[cfg.text_column].tolist()
     coco_ids: np.ndarray = df[coco_id_col].values  # type: ignore[assignment]
 
