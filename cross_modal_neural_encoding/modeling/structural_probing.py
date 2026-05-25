@@ -16,15 +16,25 @@ from __future__ import annotations
 import hydra
 import numpy as np
 import pandas as pd
+import torch
+from himalaya.backend import set_backend
+from himalaya.ridge import RidgeCV as HimalayaRidgeCV
 from loguru import logger
 from pathlib import Path
-from sklearn.linear_model import RidgeCV
-from sklearn.model_selection import KFold
 from sklearn.metrics import r2_score
 from omegaconf import DictConfig
 from typing import cast
+from PIL import Image
 
-from .neural_encoding import load_embeddings
+from .extract_embeddings import (
+    _DTYPES,
+    _get_language_model,
+    _get_vision_layers,
+    _load_model,
+    _load_processor,
+    extract_text_embeddings,
+    extract_vision_embeddings,
+)
 
 PROJ_ROOT = Path(__file__).parent.parent.parent
 
@@ -47,47 +57,81 @@ def _pick_middle_layer(layers: list[int]) -> int | None:
     return layers[len(layers) // 2]
 
 
-def _auto_select_layer_for_modality(
-    embeddings_dir: Path,
-    model_label: str,
+def _auto_select_layer_from_model(
+    model: torch.nn.Module,
     modality: str,
 ) -> int | None:
-    emb_dir = embeddings_dir / model_label / f"{modality}_embeddings"
-    layers = _list_available_layers(emb_dir)
-    if not layers:
-        logger.warning(
-            f"No {modality} layers found for {model_label} in {emb_dir}."
+    modality = modality.lower()
+    if modality == "vision":
+        try:
+            layers = _get_vision_layers(model)
+        except Exception as exc:
+            logger.warning(
+                f"Failed to inspect vision layers for auto selection: {exc}"
+            )
+            return None
+        return _pick_middle_layer(list(range(len(layers))))
+    if modality == "text":
+        try:
+            lm = _get_language_model(model)
+        except Exception as exc:
+            logger.warning(
+                f"Failed to inspect text layers for auto selection: {exc}"
+            )
+            return None
+
+        if hasattr(lm, "layers"):
+            n_layers = len(lm.layers)  # type: ignore[arg-type]
+        elif hasattr(lm, "encoder") and hasattr(lm.encoder, "layers"):
+            n_layers = len(lm.encoder.layers)  # type: ignore[arg-type]
+        elif hasattr(lm, "layer"):
+            n_layers = len(lm.layer)  # type: ignore[arg-type]
+        else:
+            logger.warning("Could not determine text layer count for auto selection.")
+            return None
+        return _pick_middle_layer(list(range(n_layers)))
+    raise ValueError(f"Unknown modality: {modality}")
+
+
+def _load_embedding_metadata_df(
+    cfg: DictConfig,
+    df: pd.DataFrame,
+    coco_id_col: str,
+) -> pd.DataFrame:
+    text_col = cfg.get("text_column", "text")
+    image_col = cfg.get("image_filename_column", "filepath")
+    if text_col not in df.columns or image_col not in df.columns:
+        raise KeyError(
+            "Graph dataset must include text and image columns for on-the-fly "
+            f"embeddings. Missing: {text_col if text_col not in df.columns else ''} "
+            f"{image_col if image_col not in df.columns else ''}"
         )
-        return None
-    layer = _pick_middle_layer(layers)
-    if layer is None:
-        return None
-    logger.info(
-        f"Auto-selected {modality} layer {layer} for {model_label}"
+
+    meta = df[[coco_id_col, text_col, image_col]].copy()
+
+    return meta.rename(
+        columns={
+            coco_id_col: "coco_id",
+            text_col: "text",
+            image_col: "filepath",
+        }
     )
-    return layer
 
 
-def _load_embeddings_if_available(
-    embeddings_dir: Path,
-    model_label: str,
-    embed_modality: str,
-    layer: int,
-) -> tuple[np.ndarray, np.ndarray] | None:
-    """Load embeddings if present; return None when missing.
-
-    This enables structural probing on unimodal models where only one
-    of {vision,text} embeddings is available.
-    """
-    d = embeddings_dir / model_label / f"{embed_modality}_embeddings"
-    coco_path = d / "coco_ids.npy"
-    layer_path = d / f"layer_{layer:03d}.npy"
-    if not d.exists() or not coco_path.exists() or not layer_path.exists():
-        logger.warning(
-            f"Skipping {embed_modality} embeddings: missing {d} or layer file."
-        )
-        return None
-    return load_embeddings(embeddings_dir, model_label, embed_modality, layer)
+def _deduplicate_images(
+    image_dir: Path,
+    filenames: list[str],
+) -> tuple[list[Image.Image], np.ndarray]:
+    seen: dict[str, int] = {}
+    unique_images: list[Image.Image] = []
+    for fname in filenames:
+        if fname not in seen:
+            img_path = image_dir / fname
+            img = Image.open(img_path).convert("RGB")
+            seen[fname] = len(unique_images)
+            unique_images.append(img)
+    broadcast = np.array([seen[f] for f in filenames])
+    return unique_images, broadcast
 
 
 def load_graph_dataset(
@@ -202,9 +246,9 @@ def run_graph_probing(
                 X_train, X_val = X_valid[train_idx], X_valid[val_idx]
                 y_train, y_val = y[train_idx], y[val_idx]
 
-                model = RidgeCV(
+                model = HimalayaRidgeCV(
                     alphas=alpha_grid,
-                    cv=KFold(n_splits=inner_cv_folds, shuffle=False),
+                    cv=inner_cv_folds,
                 )
                 model.fit(X_train, y_train)
                 y_pred = model.predict(X_val)
@@ -244,10 +288,9 @@ def main(cfg: DictConfig) -> None:
     n_inner_folds : int
         Number of inner CV folds for hyperparameter selection.
     """
-    # Resolve paths
-    embeddings_dir = Path(cfg.embeddings_dir)
-    if not embeddings_dir.is_absolute():
-        embeddings_dir = PROJ_ROOT / embeddings_dir
+    backend = cfg.get("himalaya_backend", "numpy")
+    set_backend(backend)
+    logger.info(f"Himalaya backend set to {backend}")
 
     output_dir = Path(cfg.output_dir)
     if not output_dir.is_absolute():
@@ -256,16 +299,8 @@ def main(cfg: DictConfig) -> None:
 
     model_label = cfg.model.replace("/", "--")
     layer_cfg = cfg.get("layer", None)
-    if layer_cfg is None or (isinstance(layer_cfg, str) and layer_cfg.lower() == "auto"):
-        vision_layer = _auto_select_layer_for_modality(
-            embeddings_dir, model_label, "vision"
-        )
-        text_layer = _auto_select_layer_for_modality(
-            embeddings_dir, model_label, "text"
-        )
-    else:
-        vision_layer = int(layer_cfg)
-        text_layer = int(layer_cfg)
+    vision_layer_cfg = cfg.get("vision_layer", None)
+    text_layer_cfg = cfg.get("text_layer", None)
     n_inner_folds = cfg.n_inner_folds
 
     dataset_name = cfg.get(
@@ -302,55 +337,116 @@ def main(cfg: DictConfig) -> None:
     random_seed = cfg.get("random_seed", 0)
     alpha_grid = np.array(cfg.get("alpha_grid", np.logspace(-3, 3, 7)))
 
-    # Load and probe vision embeddings (if available)
+    # Resolve embedding layers
+    vision_layer: int | None = None
+    text_layer: int | None = None
+
+    # Load and probe embeddings (on-the-fly)
     vision_results: dict[str, float] = {}
     vision_folds: dict[str, np.ndarray] = {}
-    vision_pack = None
-    if vision_layer is not None:
-        vision_pack = _load_embeddings_if_available(
-            embeddings_dir, model_label, "vision", vision_layer
-        )
-    if vision_pack is not None:
-        logger.info("\nProbing vision embeddings")
-        vision_coco_ids, vision_embs = vision_pack
-        vision_results, vision_folds = run_graph_probing(
-            embeddings=vision_embs,
-            embed_coco_ids=vision_coco_ids,
-            df=df,
-            coco_id_col=coco_id_col,
-            graph_columns=image_graph_columns,
-            targets=graph_targets,
-            n_outer_folds=n_outer_folds,
-            inner_cv_folds=inner_cv_folds,
-            train_ratio=train_ratio,
-            alpha_grid=alpha_grid,
-            random_seed=random_seed,
-        )
-
-    # Load and probe text embeddings (if available)
     text_results: dict[str, float] = {}
     text_folds: dict[str, np.ndarray] = {}
-    text_pack = None
-    if text_layer is not None:
-        text_pack = _load_embeddings_if_available(
-            embeddings_dir, model_label, "text", text_layer
-        )
-    if text_pack is not None:
-        logger.info("\nProbing text embeddings")
-        text_coco_ids, text_embs = text_pack
-        text_results, text_folds = run_graph_probing(
-            embeddings=text_embs,
-            embed_coco_ids=text_coco_ids,
-            df=df,
-            coco_id_col=coco_id_col,
-            graph_columns=text_graph_columns,
-            targets=graph_targets,
-            n_outer_folds=n_outer_folds,
-            inner_cv_folds=inner_cv_folds,
-            train_ratio=train_ratio,
-            alpha_grid=alpha_grid,
-            random_seed=random_seed,
-        )
+
+    cache_dir: str | None = cfg.get("cache_dir", None)
+    device = torch.device(cfg.get("device", "cpu"))
+    dtype = _DTYPES[cfg.get("dtype", "float32")]
+    pooling: str = cfg.get("pooling", "mean")
+    batch_size: int = cfg.get("batch_size", 8)
+    max_length: int = cfg.get("max_length", 512)
+    model_type: str = cfg.get("model_type", "vlm").lower()
+
+    logger.info("Loading model & processor for on-the-fly embeddings …")
+    processor = _load_processor(cfg.model, cache_dir, model_type=model_type)
+    model = _load_model(cfg.model, dtype, cache_dir).to(device).eval()
+
+    if vision_layer_cfg is not None or text_layer_cfg is not None:
+        vision_layer = int(vision_layer_cfg) if vision_layer_cfg is not None else None
+        text_layer = int(text_layer_cfg) if text_layer_cfg is not None else None
+    elif layer_cfg is None or (
+        isinstance(layer_cfg, str) and layer_cfg.lower() == "auto"
+    ):
+        vision_layer = _auto_select_layer_from_model(model, "vision")
+        text_layer = _auto_select_layer_from_model(model, "text")
+    else:
+        vision_layer = int(layer_cfg)
+        text_layer = int(layer_cfg)
+
+    meta_df = _load_embedding_metadata_df(cfg, df, coco_id_col)
+
+    if model_type in ("vlm", "vision_only") and vision_layer is not None:
+        image_dir = Path(cfg.image_dir)
+        if not image_dir.is_absolute():
+            image_dir = PROJ_ROOT / image_dir
+
+        vision_meta = meta_df.dropna(subset=["filepath"]).reset_index(drop=True)
+        if vision_meta.empty:
+            logger.warning("No valid image filepaths found for vision embeddings.")
+        else:
+            filenames = vision_meta["filepath"].astype(str).tolist()
+            coco_ids = vision_meta["coco_id"].astype(int).to_numpy()
+            unique_images, broadcast = _deduplicate_images(image_dir, filenames)
+            logger.info("Extracting vision embeddings on the fly …")
+            vis_embs = extract_vision_embeddings(
+                model,
+                processor,
+                unique_images,
+                device=device,
+                dtype=dtype,
+                pooling=pooling,
+                layer_indices=[vision_layer],
+            )[vision_layer]
+            vision_pack = (coco_ids, vis_embs[broadcast])
+            logger.info("\nProbing vision embeddings")
+            vision_coco_ids, vision_embs = vision_pack
+            vision_results, vision_folds = run_graph_probing(
+                embeddings=vision_embs,
+                embed_coco_ids=vision_coco_ids,
+                df=df,
+                coco_id_col=coco_id_col,
+                graph_columns=image_graph_columns,
+                targets=graph_targets,
+                n_outer_folds=n_outer_folds,
+                inner_cv_folds=inner_cv_folds,
+                train_ratio=train_ratio,
+                alpha_grid=alpha_grid,
+                random_seed=random_seed,
+            )
+
+    if model_type in ("vlm", "language_only") and text_layer is not None:
+        text_meta = meta_df.dropna(subset=["text"]).reset_index(drop=True)
+        text_meta["text"] = text_meta["text"].astype(str)
+        text_meta = text_meta[text_meta["text"].str.strip() != ""].reset_index(drop=True)
+        if text_meta.empty:
+            logger.warning("No valid text entries found for text embeddings.")
+        else:
+            texts = text_meta["text"].astype(str).tolist()
+            coco_ids = text_meta["coco_id"].astype(int).to_numpy()
+            logger.info("Extracting text embeddings on the fly …")
+            text_embs = extract_text_embeddings(
+                model,
+                processor,
+                texts,
+                device=device,
+                dtype=dtype,
+                pooling=pooling,
+                layer_indices=[text_layer],
+                batch_size=batch_size,
+                max_length=max_length,
+            )[text_layer]
+            logger.info("\nProbing text embeddings")
+            text_results, text_folds = run_graph_probing(
+                embeddings=text_embs,
+                embed_coco_ids=coco_ids,
+                df=df,
+                coco_id_col=coco_id_col,
+                graph_columns=text_graph_columns,
+                targets=graph_targets,
+                n_outer_folds=n_outer_folds,
+                inner_cv_folds=inner_cv_folds,
+                train_ratio=train_ratio,
+                alpha_grid=alpha_grid,
+                random_seed=random_seed,
+            )
 
     if not vision_results and not text_results:
         raise FileNotFoundError(
