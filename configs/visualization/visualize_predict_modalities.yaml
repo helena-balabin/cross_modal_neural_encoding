@@ -1,0 +1,27 @@
+# ──────────────────────────────────────────────────────────────
+# Configuration for predict-modalities heatmaps
+# See: cross_modal_neural_encoding/visualization/visualize_predict_modalities.py
+# ──────────────────────────────────────────────────────────────
+
+# Path to results CSV (REQUIRED)
+results_csv: ""
+
+# Output directory for heatmaps
+output_dir: "reports/figures/predict_modalities"
+
+# Optional explicit output filenames
+text_to_vision_output: null
+vision_to_text_output: null
+
+# Optional ordering (use embedding folder names)
+text_model_order: []
+vision_model_order: []
+
+# Plot options
+annotate: false
+font_scale: 1.2
+figsize: [10, 8]
+
+# Color scale bounds (null = auto)
+vmin: 0.0
+vmax: 0.4

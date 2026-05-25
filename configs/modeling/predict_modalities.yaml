@@ -1,0 +1,30 @@
+# ──────────────────────────────────────────────────────────────
+# Configuration for cross-modal embedding prediction
+# See: cross_modal_neural_encoding/modeling/predict_modalities.py
+# ──────────────────────────────────────────────────────────────
+
+# ── Paths ─────────────────────────────────────────────────────
+embeddings_dir: "models/embeddings"
+output_dir: "outputs/predict_modalities"
+
+# Optional: restrict to the 252 fMRI stimuli via design matrix mapping.
+# Uses column 'coco_id' or 'cocoid' with values like "123_image" / "123_text".
+# Leave blank to use all available COCO IDs in the embeddings.
+design_matrix_mapping_file: ""
+
+# ── Model lists ───────────────────────────────────────────────
+# Provide HF identifiers or embedding folder names. If empty, auto-discover.
+text_models: []
+vision_models: []
+
+# ── Layers ────────────────────────────────────────────────────
+text_layer: 12
+vision_layer: 6
+
+# ── Prediction setup ─────────────────────────────────────────
+# 5-fold CV with ridge regression and Pearson r evaluation.
+n_splits: 5
+ridge_alpha: 1.0
+random_state: 42
+standardize: true
+min_samples: 5

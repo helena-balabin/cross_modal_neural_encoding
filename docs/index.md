@@ -19,6 +19,7 @@ fMRI responses are measured while human participants process COCO images and the
 | [Evaluation & Statistics](05_evaluation_and_statistics.md) | Noise ceiling, metrics, significance testing |
 | [Visualization](06_visualization.md) | Surface projection, result figures |
 | [Configuration](07_configuration.md) | Hydra parameters, reproducibility |
+| [Predict Modalities](11_predict_modalities.md) | Cross-modal embedding prediction and heatmaps |
 
 ---
 
