@@ -20,6 +20,8 @@ from typing import Iterable
 import hydra
 import numpy as np
 import pandas as pd
+import torch
+from torch import nn
 from loguru import logger
 from omegaconf import DictConfig
 from sklearn.linear_model import Ridge
@@ -224,6 +226,41 @@ def _pearson_r_columns(y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
     return num / den
 
 
+class SkipMLP(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        *,
+        hidden_size: int,
+        bias: bool,
+        use_relu: bool,
+    ) -> None:
+        super().__init__()
+        self.use_relu = use_relu
+        self.fc1 = nn.Linear(input_dim, hidden_size, bias=bias)
+        self.fc2 = nn.Linear(hidden_size, hidden_size, bias=bias)
+        self.fc3 = nn.Linear(hidden_size, hidden_size, bias=bias)
+        self.fc4 = nn.Linear(hidden_size, hidden_size, bias=bias)
+        self.out = nn.Linear(hidden_size, output_dim, bias=bias)
+        self.relu = nn.ReLU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h1 = self.fc1(x)
+        if self.use_relu:
+            h1 = self.relu(h1)
+        h2 = self.fc2(h1) + h1
+        if self.use_relu:
+            h2 = self.relu(h2)
+        h3 = self.fc3(h2) + h2
+        if self.use_relu:
+            h3 = self.relu(h3)
+        h4 = self.fc4(h3) + h3
+        if self.use_relu:
+            h4 = self.relu(h4)
+        return self.out(h4)
+
+
 def _evaluate_cv(
     X: np.ndarray,
     Y: np.ndarray,
@@ -232,11 +269,16 @@ def _evaluate_cv(
     ridge_alpha: float,
     random_state: int,
     standardize: bool,
+    regressor: str,
+    mlp_config: dict,
 ) -> tuple[float, float, list[float]]:
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
     fold_scores: list[float] = []
 
-    for train_idx, test_idx in kf.split(X):
+    for fold_idx, (train_idx, test_idx) in enumerate(kf.split(X), start=1):
+        logger.info(
+            f"  Fold {fold_idx}/{n_splits}: train={len(train_idx)} test={len(test_idx)}"
+        )
         X_train, X_test = X[train_idx], X[test_idx]
         Y_train, Y_test = Y[train_idx], Y[test_idx]
 
@@ -250,17 +292,120 @@ def _evaluate_cv(
         else:
             Y_test_scaled = Y_test
 
-        model = Ridge(alpha=ridge_alpha)
-        model.fit(X_train, Y_train)
-        Y_pred = model.predict(X_test)
+        if regressor == "ridge":
+            model = Ridge(alpha=ridge_alpha)
+            model.fit(X_train, Y_train)
+            Y_pred = model.predict(X_test)
 
-        if standardize:
-            Y_pred = y_scaler.inverse_transform(Y_pred)
-            Y_test_eval = y_scaler.inverse_transform(Y_test_scaled)
+            if standardize:
+                Y_pred = y_scaler.inverse_transform(Y_pred)
+                Y_test_eval = y_scaler.inverse_transform(Y_test_scaled)
+            else:
+                Y_test_eval = Y_test
+
+            r = _pearson_r_columns(Y_test_eval, Y_pred)
         else:
-            Y_test_eval = Y_test
+            if not standardize:
+                logger.warning(
+                    "MLP regressors are sensitive to scaling; "
+                    "consider standardize=true."
+                )
 
-        r = _pearson_r_columns(Y_test_eval, Y_pred)
+            val_ratio = float(mlp_config.get("val_ratio", 0.1))
+            val_ratio = min(max(val_ratio, 0.05), 0.3)
+            rng = np.random.default_rng(random_state)
+            idx = np.arange(len(X_train))
+            rng.shuffle(idx)
+            split = int(len(idx) * (1.0 - val_ratio))
+            train_idx, val_idx = idx[:split], idx[split:]
+
+            X_tr = torch.tensor(X_train[train_idx], dtype=torch.float32)
+            Y_tr = torch.tensor(Y_train[train_idx], dtype=torch.float32)
+            X_val = torch.tensor(X_train[val_idx], dtype=torch.float32)
+            Y_val = torch.tensor(Y_train[val_idx], dtype=torch.float32)
+
+            device = str(mlp_config.get("device", "cuda")).lower()
+            if device == "cuda" and not torch.cuda.is_available():
+                device = "cpu"
+            device_t = torch.device(device)
+
+            model = SkipMLP(
+                X_train.shape[1],
+                Y_train.shape[1],
+                hidden_size=int(mlp_config.get("hidden_size", 256)),
+                bias=bool(mlp_config.get("bias", True)),
+                use_relu=regressor == "mlp_relu",
+            ).to(device_t)
+
+            lr = float(mlp_config.get("learning_rate", 1e-3))
+            weight_decay = float(mlp_config.get("weight_decay", 0.0))
+            batch_size = int(mlp_config.get("batch_size", 128))
+            max_epochs = int(mlp_config.get("max_epochs", 256))
+            patience = int(mlp_config.get("patience", 8))
+            log_interval = int(mlp_config.get("log_interval", 25))
+
+            optimizer = torch.optim.Adam(
+                model.parameters(), lr=lr, weight_decay=weight_decay
+            )
+            loss_fn = nn.MSELoss()
+
+            best_val = float("inf")
+            best_state: dict[str, torch.Tensor] | None = None
+            epochs_no_improve = 0
+
+            model.train()
+            for _ in range(max_epochs):
+                epoch = _ + 1
+                perm = torch.randperm(X_tr.size(0))
+                for start in range(0, X_tr.size(0), batch_size):
+                    idx_batch = perm[start : start + batch_size]
+                    xb = X_tr[idx_batch].to(device_t)
+                    yb = Y_tr[idx_batch].to(device_t)
+                    optimizer.zero_grad(set_to_none=True)
+                    preds = model(xb)
+                    loss = loss_fn(preds, yb)
+                    loss.backward()
+                    optimizer.step()
+
+                model.eval()
+                with torch.no_grad():
+                    val_pred = model(X_val.to(device_t))
+                    val_loss = loss_fn(val_pred, Y_val.to(device_t)).item()
+                model.train()
+
+                if log_interval > 0 and (epoch == 1 or epoch % log_interval == 0):
+                    logger.info(
+                        f"    Epoch {epoch}/{max_epochs} val_loss={val_loss:.6f}"
+                    )
+
+                if val_loss < best_val - 1e-6:
+                    best_val = val_loss
+                    best_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
+                    epochs_no_improve = 0
+                else:
+                    epochs_no_improve += 1
+                    if epochs_no_improve >= patience:
+                        logger.info(
+                            f"    Early stop at epoch {epoch} (best val_loss={best_val:.6f})"
+                        )
+                        break
+
+            if best_state is not None:
+                model.load_state_dict(best_state)
+
+            model.eval()
+            with torch.no_grad():
+                X_test_t = torch.tensor(X_test, dtype=torch.float32).to(device_t)
+                Y_pred = model(X_test_t).cpu().numpy()
+
+            if standardize:
+                Y_pred = y_scaler.inverse_transform(Y_pred)
+                Y_test_eval = y_scaler.inverse_transform(Y_test_scaled)
+            else:
+                Y_test_eval = Y_test
+
+            r = _pearson_r_columns(Y_test_eval, Y_pred)
+
         fold_scores.append(float(np.nanmean(r)))
 
     mean_r = float(np.nanmean(fold_scores))
@@ -367,10 +512,16 @@ def main(cfg: DictConfig) -> None:
         )
 
     n_splits = int(cfg.get("n_splits", 5))
+    regressor = str(cfg.get("regressor", "mlp_relu")).lower()
     ridge_alpha = float(cfg.get("ridge_alpha", 1.0))
     random_state = int(cfg.get("random_state", 42))
     standardize = bool(cfg.get("standardize", True))
     min_samples = int(cfg.get("min_samples", n_splits))
+    mlp_config = dict(cfg.get("mlp", {}))
+
+    logger.info(
+        f"Regressor: {regressor} | standardize={standardize}"
+    )
 
     records: list[dict] = []
     total_pairs = len(text_cache) * len(vision_cache)
@@ -410,6 +561,8 @@ def main(cfg: DictConfig) -> None:
                 ridge_alpha=ridge_alpha,
                 random_state=random_state,
                 standardize=standardize,
+                regressor=regressor,
+                mlp_config=mlp_config,
             )
             logger.info(
                 f"  text→vision mean r = {mean_r:.4f} (std {std_r:.4f})"
@@ -428,6 +581,7 @@ def main(cfg: DictConfig) -> None:
                 "n_features_out": Y_vision.shape[1],
                 "mean_r": mean_r,
                 "std_r": std_r,
+                "regressor": regressor,
             }
             for i, score in enumerate(fold_scores):
                 record[f"fold_{i}"] = score
@@ -440,6 +594,8 @@ def main(cfg: DictConfig) -> None:
                 ridge_alpha=ridge_alpha,
                 random_state=random_state,
                 standardize=standardize,
+                regressor=regressor,
+                mlp_config=mlp_config,
             )
             logger.info(
                 f"  vision→text mean r = {mean_r:.4f} (std {std_r:.4f})"
@@ -458,6 +614,7 @@ def main(cfg: DictConfig) -> None:
                 "n_features_out": X_text.shape[1],
                 "mean_r": mean_r,
                 "std_r": std_r,
+                "regressor": regressor,
             }
             for i, score in enumerate(fold_scores):
                 record[f"fold_{i}"] = score

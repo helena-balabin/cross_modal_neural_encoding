@@ -22,9 +22,23 @@ text_layer: 12
 vision_layer: 6
 
 # ── Prediction setup ─────────────────────────────────────────
-# 5-fold CV with ridge regression and Pearson r evaluation.
+# 5-fold CV with configurable regressor and Pearson r evaluation.
 n_splits: 5
+regressor: "mlp_relu"  # ridge | mlp_linear | mlp_relu
 ridge_alpha: 1.0
 random_state: 42
 standardize: true
 min_samples: 5
+
+# ── MLP settings (skip-connected, 4-layer MLP) ───────────────
+mlp:
+  hidden_size: 256
+  bias: true
+  learning_rate: 0.001
+  weight_decay: 0.0
+  batch_size: 8
+  max_epochs: 256
+  patience: 8
+  val_ratio: 0.1
+  log_interval: 25
+  device: "cuda"

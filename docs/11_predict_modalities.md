@@ -31,7 +31,9 @@ Key options:
 - `text_models`, `vision_models`: explicit model lists (empty = auto-discover)
 - `text_layer`, `vision_layer`: layer indices to use
 - `n_splits`: number of CV folds (default 5)
+- `regressor`: `ridge`, `mlp_linear`, or `mlp_relu` (default)
 - `ridge_alpha`: ridge regularization strength
+- `mlp.*`: skip-connected MLP settings (hidden size, early stopping, device)
 
 ### Visualization
 
