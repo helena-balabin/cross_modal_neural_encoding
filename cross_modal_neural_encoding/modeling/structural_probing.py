@@ -427,7 +427,6 @@ def main(cfg: DictConfig) -> None:
                 processor,
                 texts,
                 device=device,
-                dtype=dtype,
                 pooling=pooling,
                 layer_indices=[text_layer],
                 batch_size=batch_size,

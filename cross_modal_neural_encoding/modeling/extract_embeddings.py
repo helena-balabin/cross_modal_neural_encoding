@@ -398,6 +398,10 @@ def extract_vision_embeddings(
 ) -> dict[int, np.ndarray]:
     """Extract per-layer vision-encoder embeddings for a list of PIL images.
 
+    ``images`` may be a plain ``list[PIL.Image]`` or a ``DataLoader`` whose
+    batches are ``(image_list, text_list)`` tuples (images are used, texts
+    are ignored).
+
     Returns
     -------
     dict
@@ -414,7 +418,12 @@ def extract_vision_embeddings(
 
     image_processor = getattr(processor, "image_processor", processor)
 
-    for img in tqdm(images, desc="Vision embeddings"):
+    if isinstance(images, DataLoader):
+        image_iter = (img for imgs, _ in tqdm(images, desc="Vision embeddings") for img in imgs)
+    else:
+        image_iter = tqdm(images, desc="Vision embeddings")  # type: ignore[assignment]
+
+    for img in image_iter:
         inputs = image_processor(images=[img], return_tensors="pt")  # type: ignore[call-arg]
         pixel_values = inputs["pixel_values"].to(device=device, dtype=dtype)
         extra: dict = {}
@@ -438,13 +447,16 @@ def extract_text_embeddings(
     texts: list[str] | DataLoader,
     *,
     device: torch.device,
-    dtype: torch.dtype,
     pooling: str,
     layer_indices: list[int] | None = None,
     batch_size: int = 8,
     max_length: int = 512,
 ) -> dict[int, np.ndarray]:
     """Extract per-layer language-model embeddings for a list of texts.
+
+    ``texts`` may be a plain ``list[str]`` or a ``DataLoader`` whose batches
+    are ``(image_list, text_list)`` tuples (texts are used, images are
+    ignored).
 
     Returns
     -------
@@ -457,13 +469,17 @@ def extract_text_embeddings(
 
     results: dict[int, list[np.ndarray]] | None = None
 
-    for start in tqdm(range(0, len(texts), batch_size), desc="Text embeddings"):
-        if isinstance(texts, DataLoader):
-            batch = next(iter(texts))["sentences_raw"]
-        else:
-            batch = texts[start : start + batch_size]
+    if isinstance(texts, DataLoader):
+        batches_iter = (text_batch for _imgs, text_batch in tqdm(texts, desc="Text embeddings"))
+    else:
+        batches_iter = (
+            texts[i : i + batch_size]
+            for i in tqdm(range(0, len(texts), batch_size), desc="Text embeddings")
+        )
+
+    for batch in batches_iter:
         tokens = tokenizer(  # type: ignore[call-arg]
-            batch,
+            list(batch),
             return_tensors="pt",
             padding=True,
             truncation=True,
@@ -690,7 +706,6 @@ def main(cfg: DictConfig) -> None:
                 processor,
                 texts,
                 device=device,
-                dtype=dtype,
                 pooling=pooling,
                 layer_indices=text_layer_indices,
                 batch_size=batch_size,

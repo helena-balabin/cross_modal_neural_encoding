@@ -475,9 +475,10 @@ def _extract_on_the_fly_embeddings(
     batch_size: int,
     max_length: int,
     cache_dir: str | None,
-) -> tuple[np.ndarray, np.ndarray, int, int]:
+) -> tuple[np.ndarray | None, np.ndarray | None, int | None, int | None]:
     model_label = _normalize_model_label(model_name)
     dtype_t = _DTYPES.get(dtype, torch.float32)
+    mode = model_type.lower()
 
     processor = _load_processor(model_name, cache_dir=cache_dir, model_type=model_type)
     model = _load_model(model_name, dtype=dtype_t, cache_dir=cache_dir)
@@ -490,7 +491,6 @@ def _extract_on_the_fly_embeddings(
         text_column=text_column
     )
 
-    # Use DataLoader for efficient batching and parallel loading
     data_loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -500,42 +500,52 @@ def _extract_on_the_fly_embeddings(
         collate_fn=lambda batch: tuple(zip(*batch))
     )
 
-    # Extract vision embeddings using DataLoader
-    logger.info(f"[{model_label}] Extracting vision embeddings (on-the-fly)")
-    vision_embs = extract_vision_embeddings(
-        model,
-        processor,
-        data_loader,
-        device=torch.device(device),
-        dtype=dtype_t,
-        pooling=pooling,
-        layer_indices=None,
-    )
-    vision_layer = _pick_middle_layer(sorted(vision_embs.keys()))
-    if vision_layer is None:
-        raise ValueError(f"No vision layers extracted for {model_label}")
-    vision = vision_embs[vision_layer]
+    vision: np.ndarray | None = None
+    vision_layer: int | None = None
+    text: np.ndarray | None = None
+    text_layer: int | None = None
 
-    logger.info(f"[{model_label}] Extracting text embeddings (on-the-fly)")
-    text_embs = extract_text_embeddings(
-        model,
-        processor,
-        data_loader,
-        device=torch.device(device),
-        dtype=dtype_t,
-        pooling=pooling,
-        layer_indices=None,
-        batch_size=batch_size,
-        max_length=max_length,
-    )
-    text_layer = _pick_middle_layer(sorted(text_embs.keys()))
-    if text_layer is None:
-        raise ValueError(f"No text layers extracted for {model_label}")
-    text = text_embs[text_layer]
+    if mode in ("vlm", "vision_only"):
+        logger.info(f"[{model_label}] Extracting vision embeddings (on-the-fly)")
+        vision_embs = extract_vision_embeddings(
+            model,
+            processor,
+            data_loader,
+            device=torch.device(device),
+            dtype=dtype_t,
+            pooling=pooling,
+            layer_indices=None,
+        )
+        vision_layer = _pick_middle_layer(sorted(vision_embs.keys()))
+        if vision_layer is None:
+            raise ValueError(f"No vision layers extracted for {model_label}")
+        vision = vision_embs[vision_layer]
+    else:
+        logger.info(f"[{model_label}] Skipping vision embeddings (model_type='{model_type}').")
 
-    logger.info(
-        f"[{model_label}] Using layers vision={vision_layer}, text={text_layer}"
-    )
+    if mode in ("vlm", "language_only"):
+        logger.info(f"[{model_label}] Extracting text embeddings (on-the-fly)")
+        text_embs = extract_text_embeddings(
+            model,
+            processor,
+            data_loader,
+            device=torch.device(device),
+            pooling=pooling,
+            layer_indices=None,
+            batch_size=batch_size,
+            max_length=max_length,
+        )
+        text_layer = _pick_middle_layer(sorted(text_embs.keys()))
+        if text_layer is None:
+            raise ValueError(f"No text layers extracted for {model_label}")
+        text = text_embs[text_layer]
+    else:
+        logger.info(f"[{model_label}] Skipping text embeddings (model_type='{model_type}').")
+
+    if vision is not None and text is not None:
+        logger.info(
+            f"[{model_label}] Using layers vision={vision_layer}, text={text_layer}"
+        )
     return vision, text, vision_layer, text_layer
 
 
@@ -640,18 +650,20 @@ def main(cfg: DictConfig) -> None:
                 cache_dir=cache_dir,
             )
             label = _normalize_model_label(model_name)
-            text_cache[label] = EmbeddingBundle(
-                coco_ids=np.arange(len(text)),
-                embeddings=text,
-                layer=text_layer,
-                model_dir=Path("."),
-            )
-            vision_cache[label] = EmbeddingBundle(
-                coco_ids=np.arange(len(vision)),
-                embeddings=vision,
-                layer=vision_layer,
-                model_dir=Path("."),
-            )
+            if text is not None and text_layer is not None:
+                text_cache[label] = EmbeddingBundle(
+                    coco_ids=np.arange(len(text)),
+                    embeddings=text,
+                    layer=text_layer,
+                    model_dir=Path("."),
+                )
+            if vision is not None and vision_layer is not None:
+                vision_cache[label] = EmbeddingBundle(
+                    coco_ids=np.arange(len(vision)),
+                    embeddings=vision,
+                    layer=vision_layer,
+                    model_dir=Path("."),
+                )
     else:
         logger.info(f"Scanning embeddings under {embeddings_dir}")
         model_dirs = _discover_model_dirs(embeddings_dir)
