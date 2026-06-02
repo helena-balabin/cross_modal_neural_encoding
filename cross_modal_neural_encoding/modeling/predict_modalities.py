@@ -15,20 +15,28 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, cast
 
 import hydra
 import numpy as np
 import pandas as pd
 import torch
-from torch import nn
+from datasets import load_dataset
 from loguru import logger
-from omegaconf import DictConfig
 from sklearn.linear_model import Ridge
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
-
-from cross_modal_neural_encoding.config import PROJ_ROOT
+from omegaconf import DictConfig
+from torch import nn
+from torch.utils.data import DataLoader
+from cross_modal_neural_encoding.modeling.datasets import VGCOCODataset
+from cross_modal_neural_encoding.modeling.extract_embeddings import (
+    _DTYPES,
+    _load_model,
+    _load_processor,
+    extract_text_embeddings,
+    extract_vision_embeddings,
+)
 
 
 @dataclass
@@ -413,6 +421,124 @@ def _evaluate_cv(
     return mean_r, std_r, fold_scores
 
 
+def _load_vg_coco_pairs(
+    dataset_name: str,
+    *,
+    image_id_column: str,
+    image_path_column: str,
+    text_column: str,
+    max_samples: int | None,
+    random_state: int,
+) -> pd.DataFrame:
+    logger.info(f"Loading dataset {dataset_name}")
+    dataset = load_dataset(dataset_name, split="train")
+    df = cast(pd.DataFrame, dataset.to_pandas())
+    missing_cols = [
+        col
+        for col in (image_id_column, image_path_column, text_column)
+        if col not in df.columns
+    ]
+    if missing_cols:
+        raise KeyError(f"Missing columns in dataset: {missing_cols}")
+
+    rng = np.random.default_rng(random_state)
+    grouped = df.groupby(image_id_column, sort=False)
+    sample_rows = []
+    for _, group in grouped:
+        idx = rng.integers(0, len(group))
+        sample_rows.append(group.iloc[idx])
+    sampled_df = pd.DataFrame(sample_rows).reset_index(drop=True)
+
+    if max_samples is not None and max_samples > 0:
+        sampled_df = sampled_df.sample(
+            n=min(max_samples, len(sampled_df)),
+            random_state=random_state,
+        ).reset_index(drop=True)
+
+    logger.info(
+        f"Selected {len(sampled_df)} unique images with one caption each"
+    )
+    return sampled_df
+
+
+def _extract_on_the_fly_embeddings(
+    *,
+    model_name: str,
+    model_type: str,
+    image_dir: Path,
+    image_path_column: str,
+    text_column: str,
+    dataframe: pd.DataFrame,
+    device: str,
+    dtype: str,
+    pooling: str,
+    batch_size: int,
+    max_length: int,
+    cache_dir: str | None,
+) -> tuple[np.ndarray, np.ndarray, int, int]:
+    model_label = _normalize_model_label(model_name)
+    dtype_t = _DTYPES.get(dtype, torch.float32)
+
+    processor = _load_processor(model_name, cache_dir=cache_dir, model_type=model_type)
+    model = _load_model(model_name, dtype=dtype_t, cache_dir=cache_dir)
+    model = model.to(torch.device(device)).eval()
+
+    dataset = VGCOCODataset(
+        dataframe=dataframe,
+        image_dir=image_dir,
+        image_path_column=image_path_column,
+        text_column=text_column
+    )
+
+    # Use DataLoader for efficient batching and parallel loading
+    data_loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True if device == "cuda" else False,
+        collate_fn=lambda batch: tuple(zip(*batch))
+    )
+
+    # Extract vision embeddings using DataLoader
+    logger.info(f"[{model_label}] Extracting vision embeddings (on-the-fly)")
+    vision_embs = extract_vision_embeddings(
+        model,
+        processor,
+        data_loader,
+        device=torch.device(device),
+        dtype=dtype_t,
+        pooling=pooling,
+        layer_indices=None,
+    )
+    vision_layer = _pick_middle_layer(sorted(vision_embs.keys()))
+    if vision_layer is None:
+        raise ValueError(f"No vision layers extracted for {model_label}")
+    vision = vision_embs[vision_layer]
+
+    logger.info(f"[{model_label}] Extracting text embeddings (on-the-fly)")
+    text_embs = extract_text_embeddings(
+        model,
+        processor,
+        data_loader,
+        device=torch.device(device),
+        dtype=dtype_t,
+        pooling=pooling,
+        layer_indices=None,
+        batch_size=batch_size,
+        max_length=max_length,
+    )
+    text_layer = _pick_middle_layer(sorted(text_embs.keys()))
+    if text_layer is None:
+        raise ValueError(f"No text layers extracted for {model_label}")
+    text = text_embs[text_layer]
+
+    logger.info(
+        f"[{model_label}] Using layers vision={vision_layer}, text={text_layer}"
+    )
+    return vision, text, vision_layer, text_layer
+
+
 def _resolve_model_list(
     models: Iterable[str] | None,
     model_dirs: dict[str, Path],
@@ -448,45 +574,106 @@ def _resolve_model_list(
 )
 def main(cfg: DictConfig) -> None:
     embeddings_dir = Path(cfg.embeddings_dir)
-    if not embeddings_dir.is_absolute():
-        embeddings_dir = PROJ_ROOT / embeddings_dir
-
     output_dir = Path(cfg.output_dir)
-    if not output_dir.is_absolute():
-        output_dir = PROJ_ROOT / output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    design_mapping_value = str(cfg.get("design_matrix_mapping_file", "")).strip()
-    if design_mapping_value:
-        design_mapping = Path(design_mapping_value)
-        if not design_mapping.is_absolute():
-            design_mapping = PROJ_ROOT / design_mapping
-        desired_ids = _load_design_matrix_coco_ids(design_mapping)
-    else:
+    use_vg_coco = bool(cfg.get("use_vg_coco", False))
+    if use_vg_coco:
+        dataset_name = str(cfg.get("dataset_name", "helena-balabin/vg-coco-overlap"))
+        image_id_column = str(cfg.get("image_id_column", "imgid"))
+        image_path_column = str(cfg.get("image_path_column", "filepath"))
+        text_column = str(cfg.get("text_column", "sentences_raw"))
+        max_samples = cfg.get("max_samples")
+        random_state = int(cfg.get("random_state", 42))
+
+        image_dir = Path(cfg.get("image_dir", ""))
+        if not image_dir.exists():
+            raise FileNotFoundError(f"Image directory not found: {image_dir}")
+
+        dataset_df = _load_vg_coco_pairs(
+            dataset_name,
+            image_id_column=image_id_column,
+            image_path_column=image_path_column,
+            text_column=text_column,
+            max_samples=max_samples,
+            random_state=random_state,
+        )
         desired_ids = None
+    else:
+        design_mapping_value = str(cfg.get("design_matrix_mapping_file", "")).strip()
+        if design_mapping_value:
+            design_mapping = Path(design_mapping_value)
+            desired_ids = _load_design_matrix_coco_ids(design_mapping)
+        else:
+            desired_ids = None
 
     text_layer = _parse_layer(cfg.get("text_layer"))
     vision_layer = _parse_layer(cfg.get("vision_layer"))
-    logger.info(f"Scanning embeddings under {embeddings_dir}")
-    model_dirs = _discover_model_dirs(embeddings_dir)
-    if not model_dirs:
-        raise ValueError(
-            f"No embedding model directories found under {embeddings_dir}."
-        )
-    logger.info(f"Discovered {len(model_dirs)} model directories")
+    if use_vg_coco:
+        model_dirs = {}
+        text_cache = {}
+        vision_cache = {}
+        model_list = cfg.get("models")
+        if not model_list:
+            raise ValueError("VG-COCO mode requires 'models' list in config.")
+        model_type = str(cfg.get("model_type", "vlm"))
+        device = str(cfg.get("device", "cuda"))
+        dtype = str(cfg.get("dtype", "bfloat16"))
+        pooling = str(cfg.get("pooling", "mean"))
+        batch_size = int(cfg.get("batch_size", 128))
+        max_length = int(cfg.get("max_length", 512))
+        cache_dir = cfg.get("cache_dir")
 
-    text_cache = _resolve_model_list(
-        cfg.get("text_models"),
-        model_dirs,
-        "text",
-        text_layer,
-    )
-    vision_cache = _resolve_model_list(
-        cfg.get("vision_models"),
-        model_dirs,
-        "vision",
-        vision_layer,
-    )
+        for model_name in model_list:
+            vision, text, vision_layer, text_layer = _extract_on_the_fly_embeddings(
+                model_name=model_name,
+                model_type=model_type,
+                image_dir=image_dir,
+                image_path_column=image_path_column,
+                text_column=text_column,
+                dataframe=dataset_df,
+                device=device,
+                dtype=dtype,
+                pooling=pooling,
+                batch_size=batch_size,
+                max_length=max_length,
+                cache_dir=cache_dir,
+            )
+            label = _normalize_model_label(model_name)
+            text_cache[label] = EmbeddingBundle(
+                coco_ids=np.arange(len(text)),
+                embeddings=text,
+                layer=text_layer,
+                model_dir=Path("."),
+            )
+            vision_cache[label] = EmbeddingBundle(
+                coco_ids=np.arange(len(vision)),
+                embeddings=vision,
+                layer=vision_layer,
+                model_dir=Path("."),
+            )
+    else:
+        logger.info(f"Scanning embeddings under {embeddings_dir}")
+        model_dirs = _discover_model_dirs(embeddings_dir)
+        if not model_dirs:
+            raise ValueError(
+                f"No embedding model directories found under {embeddings_dir}."
+            )
+        logger.info(f"Discovered {len(model_dirs)} model directories")
+
+    if not use_vg_coco:
+        text_cache = _resolve_model_list(
+            cfg.get("text_models"),
+            model_dirs,
+            "text",
+            text_layer,
+        )
+        vision_cache = _resolve_model_list(
+            cfg.get("vision_models"),
+            model_dirs,
+            "vision",
+            vision_layer,
+        )
 
     if not text_cache or not vision_cache:
         raise ValueError("No valid text or vision models found to evaluate.")
@@ -495,21 +682,22 @@ def main(cfg: DictConfig) -> None:
         f"Text models: {len(text_cache)} | Vision models: {len(vision_cache)}"
     )
 
-    for label, bundle in list(text_cache.items()):
-        bundle = _aggregate_by_coco_id(bundle)
-        bundle = _filter_to_coco_ids(bundle, desired_ids)
-        text_cache[label] = bundle
-        logger.info(
-            f"Text {label}: {len(bundle.coco_ids)} stimuli after filtering"
-        )
+    if not use_vg_coco:
+        for label, bundle in list(text_cache.items()):
+            bundle = _aggregate_by_coco_id(bundle)
+            bundle = _filter_to_coco_ids(bundle, desired_ids)
+            text_cache[label] = bundle
+            logger.info(
+                f"Text {label}: {len(bundle.coco_ids)} stimuli after filtering"
+            )
 
-    for label, bundle in list(vision_cache.items()):
-        bundle = _aggregate_by_coco_id(bundle)
-        bundle = _filter_to_coco_ids(bundle, desired_ids)
-        vision_cache[label] = bundle
-        logger.info(
-            f"Vision {label}: {len(bundle.coco_ids)} stimuli after filtering"
-        )
+        for label, bundle in list(vision_cache.items()):
+            bundle = _aggregate_by_coco_id(bundle)
+            bundle = _filter_to_coco_ids(bundle, desired_ids)
+            vision_cache[label] = bundle
+            logger.info(
+                f"Vision {label}: {len(bundle.coco_ids)} stimuli after filtering"
+            )
 
     n_splits = int(cfg.get("n_splits", 5))
     regressor = str(cfg.get("regressor", "mlp_relu")).lower()

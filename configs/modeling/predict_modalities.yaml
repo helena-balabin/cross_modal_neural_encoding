@@ -7,6 +7,25 @@
 embeddings_dir: "models/embeddings"
 output_dir: "outputs/predict_modalities"
 
+# ── Optional VG-COCO mode (on-the-fly embeddings) ─────────────
+# When true, ignores embeddings_dir and extracts embeddings from
+# the dataset below using one random caption per image.
+use_vg_coco: false
+dataset_name: "helena-balabin/vg-coco-overlap"
+image_dir: "coco/coco_images"
+image_id_column: "imgid"
+image_path_column: "filepath"
+text_column: "sentences_raw"
+max_samples: null
+models: []
+model_type: "vlm"
+device: "cuda"
+dtype: "bfloat16"
+pooling: "mean"
+batch_size: 128
+max_length: 512
+cache_dir: "huggingface/transformers"
+
 # Optional: restrict to the 252 fMRI stimuli via design matrix mapping.
 # Uses column 'coco_id' or 'cocoid' with values like "123_image" / "123_text".
 # Leave blank to use all available COCO IDs in the embeddings.

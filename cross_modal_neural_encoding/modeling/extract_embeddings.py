@@ -32,6 +32,7 @@ import torch
 from loguru import logger
 from omegaconf import DictConfig
 from PIL import Image
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import (
     AutoImageProcessor,
@@ -388,7 +389,7 @@ def _pool(
 def extract_vision_embeddings(
     model: torch.nn.Module,
     processor: object,
-    images: list[Image.Image],
+    images: list[Image.Image] | DataLoader,
     *,
     device: torch.device,
     dtype: torch.dtype,
@@ -434,7 +435,7 @@ def extract_vision_embeddings(
 def extract_text_embeddings(
     model: torch.nn.Module,
     processor: object,
-    texts: list[str],
+    texts: list[str] | DataLoader,
     *,
     device: torch.device,
     dtype: torch.dtype,
@@ -457,7 +458,10 @@ def extract_text_embeddings(
     results: dict[int, list[np.ndarray]] | None = None
 
     for start in tqdm(range(0, len(texts), batch_size), desc="Text embeddings"):
-        batch = texts[start : start + batch_size]
+        if isinstance(texts, DataLoader):
+            batch = next(iter(texts))["sentences_raw"]
+        else:
+            batch = texts[start : start + batch_size]
         tokens = tokenizer(  # type: ignore[call-arg]
             batch,
             return_tensors="pt",

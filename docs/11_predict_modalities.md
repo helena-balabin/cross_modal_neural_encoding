@@ -26,6 +26,11 @@ Two directions are evaluated:
 
 Key options:
 
+- `use_vg_coco`: enable on-the-fly embeddings from VG-COCO
+- `dataset_name`: dataset id (default `helena-balabin/vg-coco-overlap`)
+- `image_dir`: directory with COCO images for `filepath`
+- `image_id_column`, `image_path_column`, `text_column`: dataset columns
+- `models`: list of HF model ids to extract on-the-fly
 - `embeddings_dir`: root directory with extracted embeddings
 - `design_matrix_mapping_file`: restrict to the 252 fMRI stimuli (optional)
 - `text_models`, `vision_models`: explicit model lists (empty = auto-discover)
