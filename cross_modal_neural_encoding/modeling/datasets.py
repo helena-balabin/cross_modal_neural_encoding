@@ -4,6 +4,7 @@ PyTorch datasets for cross-modal neural encoding.
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import pandas as pd
@@ -66,8 +67,13 @@ class VGCOCODataset(Dataset):
         else:
             img_path = self.image_dir / rel_path
 
-        # Load image
-        image = Image.open(img_path).convert("RGB")
+        # Load image — fall back to a blank image on I/O errors (e.g. corrupt
+        # Lustre blocks) so one bad file doesn't abort the whole job.
+        try:
+            image = Image.open(img_path).convert("RGB")
+        except OSError as e:
+            warnings.warn(f"Could not read {img_path}, substituting blank image: {e}")
+            image = Image.new("RGB", (224, 224), color=0)
 
         # Get text
         text = str(row[self.text_column])

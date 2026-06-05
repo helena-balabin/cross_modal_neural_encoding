@@ -18,13 +18,15 @@ image_path_column: "filepath"
 text_column: "sentences_raw"
 max_samples: null
 models: []
-model_type: "vlm"
+model_type: "vlm"  # default; vision_only/language_only inferred from model name
 device: "cuda"
 dtype: "bfloat16"
 pooling: "mean"
 batch_size: 128
 max_length: 512
 cache_dir: "huggingface/transformers"
+dataset_cache_dir: null       # HuggingFace datasets cache dir (null = HF default)
+embeddings_cache_dir: null    # dir to persist extracted embeddings (null = no caching)
 
 # Optional: restrict to the 252 fMRI stimuli via design matrix mapping.
 # Uses column 'coco_id' or 'cocoid' with values like "123_image" / "123_text".

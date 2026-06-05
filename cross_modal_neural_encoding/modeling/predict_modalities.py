@@ -429,9 +429,10 @@ def _load_vg_coco_pairs(
     text_column: str,
     max_samples: int | None,
     random_state: int,
+    cache_dir: str | None = None,
 ) -> pd.DataFrame:
     logger.info(f"Loading dataset {dataset_name}")
-    dataset = load_dataset(dataset_name, split="train")
+    dataset = load_dataset(dataset_name, split="train", cache_dir=cache_dir)
     df = cast(pd.DataFrame, dataset.to_pandas())
     missing_cols = [
         col
@@ -461,6 +462,42 @@ def _load_vg_coco_pairs(
     return sampled_df
 
 
+def _embedding_cache_paths(
+    cache_root: Path,
+    model_label: str,
+    modality: str,
+) -> tuple[Path, Path]:
+    """Return (embeddings_path, layer_path) for the given model/modality."""
+    d = cache_root / model_label / modality
+    return d / "embeddings.npy", d / "layer.txt"
+
+
+def _load_cached_embeddings(
+    cache_root: Path,
+    model_label: str,
+    modality: str,
+) -> tuple[np.ndarray, int] | None:
+    emb_path, layer_path = _embedding_cache_paths(cache_root, model_label, modality)
+    if emb_path.exists() and layer_path.exists():
+        logger.info(f"[{model_label}] Loading cached {modality} embeddings from {emb_path}")
+        return np.load(emb_path), int(layer_path.read_text().strip())
+    return None
+
+
+def _save_cached_embeddings(
+    cache_root: Path,
+    model_label: str,
+    modality: str,
+    embeddings: np.ndarray,
+    layer: int,
+) -> None:
+    emb_path, layer_path = _embedding_cache_paths(cache_root, model_label, modality)
+    emb_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(emb_path, embeddings)
+    layer_path.write_text(str(layer))
+    logger.info(f"[{model_label}] Cached {modality} embeddings to {emb_path}")
+
+
 def _extract_on_the_fly_embeddings(
     *,
     model_name: str,
@@ -475,10 +512,34 @@ def _extract_on_the_fly_embeddings(
     batch_size: int,
     max_length: int,
     cache_dir: str | None,
+    embeddings_cache_dir: Path | None,
 ) -> tuple[np.ndarray | None, np.ndarray | None, int | None, int | None]:
     model_label = _normalize_model_label(model_name)
     dtype_t = _DTYPES.get(dtype, torch.float32)
     mode = model_type.lower()
+
+    vision: np.ndarray | None = None
+    vision_layer: int | None = None
+    text: np.ndarray | None = None
+    text_layer: int | None = None
+
+    # Try loading from cache before touching the GPU
+    if embeddings_cache_dir is not None:
+        if mode in ("vlm", "vision_only"):
+            cached = _load_cached_embeddings(embeddings_cache_dir, model_label, "vision")
+            if cached is not None:
+                vision, vision_layer = cached
+        if mode in ("vlm", "language_only"):
+            cached = _load_cached_embeddings(embeddings_cache_dir, model_label, "text")
+            if cached is not None:
+                text, text_layer = cached
+
+    need_vision = vision is None and mode in ("vlm", "vision_only")
+    need_text = text is None and mode in ("vlm", "language_only")
+
+    if not need_vision and not need_text:
+        logger.info(f"[{model_label}] All embeddings loaded from cache, skipping extraction.")
+        return vision, text, vision_layer, text_layer
 
     processor = _load_processor(model_name, cache_dir=cache_dir, model_type=model_type)
     model = _load_model(model_name, dtype=dtype_t, cache_dir=cache_dir)
@@ -488,24 +549,18 @@ def _extract_on_the_fly_embeddings(
         dataframe=dataframe,
         image_dir=image_dir,
         image_path_column=image_path_column,
-        text_column=text_column
+        text_column=text_column,
     )
-
     data_loader = DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=4,
-        pin_memory=True if device == "cuda" else False,
-        collate_fn=lambda batch: tuple(zip(*batch))
+        pin_memory=(device == "cuda"),
+        collate_fn=lambda batch: tuple(zip(*batch)),
     )
 
-    vision: np.ndarray | None = None
-    vision_layer: int | None = None
-    text: np.ndarray | None = None
-    text_layer: int | None = None
-
-    if mode in ("vlm", "vision_only"):
+    if need_vision:
         logger.info(f"[{model_label}] Extracting vision embeddings (on-the-fly)")
         vision_embs = extract_vision_embeddings(
             model,
@@ -520,10 +575,12 @@ def _extract_on_the_fly_embeddings(
         if vision_layer is None:
             raise ValueError(f"No vision layers extracted for {model_label}")
         vision = vision_embs[vision_layer]
+        if embeddings_cache_dir is not None:
+            _save_cached_embeddings(embeddings_cache_dir, model_label, "vision", vision, vision_layer)
     else:
         logger.info(f"[{model_label}] Skipping vision embeddings (model_type='{model_type}').")
 
-    if mode in ("vlm", "language_only"):
+    if need_text:
         logger.info(f"[{model_label}] Extracting text embeddings (on-the-fly)")
         text_embs = extract_text_embeddings(
             model,
@@ -539,14 +596,27 @@ def _extract_on_the_fly_embeddings(
         if text_layer is None:
             raise ValueError(f"No text layers extracted for {model_label}")
         text = text_embs[text_layer]
+        if embeddings_cache_dir is not None:
+            _save_cached_embeddings(embeddings_cache_dir, model_label, "text", text, text_layer)
     else:
         logger.info(f"[{model_label}] Skipping text embeddings (model_type='{model_type}').")
 
     if vision is not None and text is not None:
-        logger.info(
-            f"[{model_label}] Using layers vision={vision_layer}, text={text_layer}"
-        )
+        logger.info(f"[{model_label}] Using layers vision={vision_layer}, text={text_layer}")
     return vision, text, vision_layer, text_layer
+
+
+_VISION_ONLY_PATTERNS = ("dinov2", "ijepa", "vit")
+_LANGUAGE_ONLY_PATTERNS = ("pythia", "/opt-", "gpt2", "gpt-neo", "llama", "mistral")
+
+
+def _infer_model_type(model_name: str, default: str) -> str:
+    name_lower = model_name.lower()
+    if any(p in name_lower for p in _VISION_ONLY_PATTERNS):
+        return "vision_only"
+    if any(p in name_lower for p in _LANGUAGE_ONLY_PATTERNS):
+        return "language_only"
+    return default
 
 
 def _resolve_model_list(
@@ -588,6 +658,8 @@ def main(cfg: DictConfig) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     use_vg_coco = bool(cfg.get("use_vg_coco", False))
+    dataset_cache_dir = cfg.get("dataset_cache_dir")
+
     if use_vg_coco:
         dataset_name = str(cfg.get("dataset_name", "helena-balabin/vg-coco-overlap"))
         image_id_column = str(cfg.get("image_id_column", "imgid"))
@@ -607,6 +679,7 @@ def main(cfg: DictConfig) -> None:
             text_column=text_column,
             max_samples=max_samples,
             random_state=random_state,
+            cache_dir=dataset_cache_dir,
         )
         desired_ids = None
     else:
@@ -626,15 +699,18 @@ def main(cfg: DictConfig) -> None:
         model_list = cfg.get("models")
         if not model_list:
             raise ValueError("VG-COCO mode requires 'models' list in config.")
-        model_type = str(cfg.get("model_type", "vlm"))
+        default_model_type = str(cfg.get("model_type", "vlm"))
         device = str(cfg.get("device", "cuda"))
         dtype = str(cfg.get("dtype", "bfloat16"))
         pooling = str(cfg.get("pooling", "mean"))
         batch_size = int(cfg.get("batch_size", 128))
         max_length = int(cfg.get("max_length", 512))
         cache_dir = cfg.get("cache_dir")
+        _emb_cache_raw = cfg.get("embeddings_cache_dir")
+        embeddings_cache_dir = Path(_emb_cache_raw) if _emb_cache_raw else None
 
         for model_name in model_list:
+            model_type = _infer_model_type(model_name, default_model_type)
             vision, text, vision_layer, text_layer = _extract_on_the_fly_embeddings(
                 model_name=model_name,
                 model_type=model_type,
@@ -648,6 +724,7 @@ def main(cfg: DictConfig) -> None:
                 batch_size=batch_size,
                 max_length=max_length,
                 cache_dir=cache_dir,
+                embeddings_cache_dir=embeddings_cache_dir,
             )
             label = _normalize_model_label(model_name)
             if text is not None and text_layer is not None:
