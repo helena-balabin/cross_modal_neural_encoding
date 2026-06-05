@@ -15,16 +15,16 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from loguru import logger
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from loguru import logger
 
 from cross_modal_neural_encoding.config import FIGURES_DIR, PROJ_ROOT
 from cross_modal_neural_encoding.utils import (
     configure_plot_fonts,
-    significance_label,
     signflip_pvalue_greater,
+    significance_label,
 )
 from cross_modal_neural_encoding.visualization.visualize_encoding_results import (
     TEXT_MODEL_PALETTE,
@@ -79,9 +79,7 @@ def load_structural_probing_results(
         if fold_file.exists():
             try:
                 folds[model_name] = pd.read_csv(fold_file)
-                logger.info(
-                    f"Loaded fold scores for model {model_name} from {fold_file}"
-                )
+                logger.info(f"Loaded fold scores for model {model_name} from {fold_file}")
             except (OSError, pd.errors.ParserError) as e:
                 logger.warning(f"Failed to load {fold_file}: {e}")
 
@@ -176,12 +174,8 @@ def create_structural_probing_plots(
     vision_targets = _collect_property_targets("vision_coco_a")
 
     # Extract data
-    model_names, text_scores, text_groups = _extract_model_scores(
-        results, text_targets
-    )
-    _, vision_scores, vision_groups = _extract_model_scores(
-        results, vision_targets
-    )
+    model_names, text_scores, text_groups = _extract_model_scores(results, text_targets)
+    _, vision_scores, vision_groups = _extract_model_scores(results, vision_targets)
 
     # Fold-based significance (optional)
     text_fold_scores = _extract_fold_scores(folds, text_targets)
@@ -295,15 +289,19 @@ def create_structural_probing_plots(
             # Extract the first row (assuming single row per model)
             if len(df) > 0:
                 row_data = df.iloc[0].to_dict()
-                row_data['model'] = model_name
+                row_data["model"] = model_name
                 all_data.append(row_data)
 
         if all_data:
             combined_df = pd.DataFrame(all_data)
 
             # Separate vision and text features for correlation analysis
-            vision_cols = [col for col in combined_df.columns if col.startswith('vision_') and col != 'model']
-            text_cols = [col for col in combined_df.columns if col.startswith('text_') and col != 'model']
+            vision_cols = [
+                col for col in combined_df.columns if col.startswith("vision_") and col != "model"
+            ]
+            text_cols = [
+                col for col in combined_df.columns if col.startswith("text_") and col != "model"
+            ]
 
             # Create vision properties correlation heatmap
             if len(vision_cols) > 1:
@@ -311,13 +309,18 @@ def create_structural_probing_plots(
                 fig, ax = plt.subplots(figsize=(8, 6))
 
                 # Create heatmap
-                im = ax.imshow(vision_data.corr(), cmap='coolwarm', vmin=-1, vmax=1)
+                im = ax.imshow(vision_data.corr(), cmap="coolwarm", vmin=-1, vmax=1)
 
                 # Set ticks and labels
                 ax.set_xticks(np.arange(len(vision_cols)))
                 ax.set_yticks(np.arange(len(vision_cols)))
-                ax.set_xticklabels([col.replace('vision_', '').replace('_', ' ').title() for col in vision_cols], rotation=45)
-                ax.set_yticklabels([col.replace('vision_', '').replace('_', ' ').title() for col in vision_cols])
+                ax.set_xticklabels(
+                    [col.replace("vision_", "").replace("_", " ").title() for col in vision_cols],
+                    rotation=45,
+                )
+                ax.set_yticklabels(
+                    [col.replace("vision_", "").replace("_", " ").title() for col in vision_cols]
+                )
 
                 # Add colorbar
                 plt.colorbar(im, ax=ax)
@@ -325,13 +328,19 @@ def create_structural_probing_plots(
                 # Add text annotations
                 for i in range(len(vision_cols)):
                     for j in range(len(vision_cols)):
-                        text = ax.text(j, i, f"{vision_data.corr().iloc[i, j]:.2f}",
-                                        ha="center", va="center", color="black")
+                        ax.text(
+                            j,
+                            i,
+                            f"{vision_data.corr().iloc[i, j]:.2f}",
+                            ha="center",
+                            va="center",
+                            color="black",
+                        )
 
-                ax.set_title('Correlation Between Vision Structural Properties')
+                ax.set_title("Correlation Between Vision Structural Properties")
                 plt.tight_layout()
                 output_path = output_dir / "structural_probing_vision_corr.png"
-                plt.savefig(output_path, dpi=300, bbox_inches='tight')
+                plt.savefig(output_path, dpi=300, bbox_inches="tight")
                 plt.close()
                 logger.success(f"Saved vision correlation heatmap to {output_path}")
 
@@ -341,13 +350,18 @@ def create_structural_probing_plots(
                 fig, ax = plt.subplots(figsize=(8, 6))
 
                 # Create heatmap
-                im = ax.imshow(text_data.corr(), cmap='coolwarm', vmin=-1, vmax=1)
+                im = ax.imshow(text_data.corr(), cmap="coolwarm", vmin=-1, vmax=1)
 
                 # Set ticks and labels
                 ax.set_xticks(np.arange(len(text_cols)))
                 ax.set_yticks(np.arange(len(text_cols)))
-                ax.set_xticklabels([col.replace('text_', '').replace('_', ' ').title() for col in text_cols], rotation=45)
-                ax.set_yticklabels([col.replace('text_', '').replace('_', ' ').title() for col in text_cols])
+                ax.set_xticklabels(
+                    [col.replace("text_", "").replace("_", " ").title() for col in text_cols],
+                    rotation=45,
+                )
+                ax.set_yticklabels(
+                    [col.replace("text_", "").replace("_", " ").title() for col in text_cols]
+                )
 
                 # Add colorbar
                 plt.colorbar(im, ax=ax)
@@ -355,13 +369,19 @@ def create_structural_probing_plots(
                 # Add text annotations
                 for i in range(len(text_cols)):
                     for j in range(len(text_cols)):
-                        text = ax.text(j, i, f"{text_data.corr().iloc[i, j]:.2f}",
-                                        ha="center", va="center", color="black")
+                        ax.text(
+                            j,
+                            i,
+                            f"{text_data.corr().iloc[i, j]:.2f}",
+                            ha="center",
+                            va="center",
+                            color="black",
+                        )
 
-                ax.set_title('Correlation Between Text Structural Properties')
+                ax.set_title("Correlation Between Text Structural Properties")
                 plt.tight_layout()
                 output_path = output_dir / "structural_probing_text_corr.png"
-                plt.savefig(output_path, dpi=300, bbox_inches='tight')
+                plt.savefig(output_path, dpi=300, bbox_inches="tight")
                 plt.close()
                 logger.success(f"Saved text correlation heatmap to {output_path}")
 
@@ -405,13 +425,13 @@ if __name__ == "__main__":
         "--results_dir",
         type=Path,
         default=PROJ_ROOT / "outputs/modeling/structural_probing",
-        help="Directory containing the structural probing results"
+        help="Directory containing the structural probing results",
     )
     parser.add_argument(
         "--output_dir",
         type=Path,
         default=None,
-        help="Directory to save the visualizations (default: figures/structural_probing)"
+        help="Directory to save the visualizations (default: figures/structural_probing)",
     )
 
     args = parser.parse_args()

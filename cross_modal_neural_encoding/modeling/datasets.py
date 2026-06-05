@@ -4,8 +4,8 @@ PyTorch datasets for cross-modal neural encoding.
 
 from __future__ import annotations
 
-import warnings
 from pathlib import Path
+import warnings
 
 import pandas as pd
 from PIL import Image
@@ -35,7 +35,7 @@ class VGCOCODataset(Dataset):
         dataframe: pd.DataFrame,
         image_dir: Path,
         image_path_column: str = "filepath",
-        text_column: str = "sentences_raw"
+        text_column: str = "sentences_raw",
     ):
         self.dataframe = dataframe
         self.image_dir = image_dir

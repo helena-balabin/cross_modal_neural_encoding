@@ -50,13 +50,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import hydra
-import numpy as np
-import pandas as pd
 from fracridge import FracRidgeRegressor
+import hydra
 from joblib import Parallel, delayed
 from loguru import logger
+import numpy as np
 from omegaconf import DictConfig, OmegaConf
+import pandas as pd
 from sklearn.decomposition import PCA
 from sklearn.linear_model import Ridge
 from sklearn.model_selection import GroupKFold, GroupShuffleSplit
@@ -65,15 +65,14 @@ from tqdm import tqdm
 
 from cross_modal_neural_encoding.config import PROJ_ROOT
 from cross_modal_neural_encoding.utils import (
-    normalize_betas_per_run,
+    build_fmri_cache,
     compute_nc_by_modality,
-    load_design_matrix_mapping,
     load_brain_mask,
     load_brain_mask_img,
+    load_design_matrix_mapping,
+    normalize_betas_per_run,
     save_voxelwise_nifti,
-    build_fmri_cache,
 )
-
 
 # ---------------------------------------------------------------------------
 # Data loading
@@ -104,9 +103,7 @@ def load_designinfo_stimulus_ids_and_num_runs(
         return stimulus_ids, num_runs
 
     designinfo = np.load(designinfo_file, allow_pickle=True).item()
-    stimulus_ids = np.asarray(
-        designinfo.get("stimorder", stimulus_ids), dtype=int
-    ).flatten()
+    stimulus_ids = np.asarray(designinfo.get("stimorder", stimulus_ids), dtype=int).flatten()
 
     if stimulus_ids.shape[0] != n_trials:
         raise ValueError(
@@ -200,16 +197,11 @@ def load_fmri(
     """
     sub_dir = glmsingle_root / subject
 
-    typed = np.load(
-        sub_dir / "TYPED_FITHRF_GLMDENOISE_RR.npy", allow_pickle=True
-    ).item()
+    typed = np.load(sub_dir / "TYPED_FITHRF_GLMDENOISE_RR.npy", allow_pickle=True).item()
     betas_4d: np.ndarray = typed["betasmd"]  # (X, Y, Z, n_trials)
     betas = betas_4d.reshape(-1, betas_4d.shape[-1])  # (n_vox, n_trials)
 
-    logger.info(
-        f"  {subject}: betas {betas_4d.shape} → "
-        f"({betas.shape[0]}, {betas.shape[1]})"
-    )
+    logger.info(f"  {subject}: betas {betas_4d.shape} → ({betas.shape[0]}, {betas.shape[1]})")
     return betas
 
 
@@ -351,13 +343,9 @@ def build_structural_feature_vectors(
         Rows for COCO IDs absent from target_coco_ids are NaN.
     """
     if embed_modality == "text":
-        col_nodes, col_edges, col_depth = (
-            "amr_n_nodes", "amr_n_edges", "amr_graph_depth"
-        )
+        col_nodes, col_edges, col_depth = ("amr_n_nodes", "amr_n_edges", "amr_graph_depth")
     else:
-        col_nodes, col_edges, col_depth = (
-            "coco_a_nodes", "coco_a_edges", "coco_a_graph_depth"
-        )
+        col_nodes, col_edges, col_depth = ("coco_a_nodes", "coco_a_edges", "coco_a_graph_depth")
 
     target_lookup: dict[int, np.ndarray] = {
         int(cid): np.array(
@@ -483,13 +471,9 @@ def run_encoding(
     n_voxels = Y.shape[1]
 
     if n_outer_folds > 1:
-        outer_splits = list(
-            GroupKFold(n_splits=int(n_outer_folds)).split(X, groups=groups)
-        )
+        outer_splits = list(GroupKFold(n_splits=int(n_outer_folds)).split(X, groups=groups))
     else:
-        gss = GroupShuffleSplit(
-            n_splits=1, test_size=test_size, random_state=random_state
-        )
+        gss = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=random_state)
         outer_splits = [next(gss.split(X, groups=groups))]
     n_outer_effective = len(outer_splits)
 
@@ -611,9 +595,7 @@ def run_encoding(
         n_test_list.append(n_test_stim)
 
     per_voxel_r = np.nanmean(np.stack(fold_r_list, axis=0), axis=0)
-    best_frac_per_voxel = np.nanmean(
-        np.stack(fold_best_frac_list, axis=0), axis=0
-    )
+    best_frac_per_voxel = np.nanmean(np.stack(fold_best_frac_list, axis=0), axis=0)
     frac_val = float(np.nanmean(best_frac_per_voxel))
     if verbose:
         logger.info(f"      Mean best frac = {frac_val:.3f}")
@@ -735,16 +717,12 @@ def run_permutation_test(
         )
     else:
         null_mean_r = np.zeros(n_permutations, dtype=np.float64)
-        for i, seed in enumerate(
-            tqdm(perm_seeds, desc="        Permutations", leave=False)
-        ):
+        for i, seed in enumerate(tqdm(perm_seeds, desc="        Permutations", leave=False)):
             null_mean_r[i] = _run_single_permutation(int(seed))
 
     # p-values (Phipson & Smyth, 2010)
     real_mean = real_result["mean_r"]
-    p_mean = float(
-        (np.sum(null_mean_r >= real_mean) + 1) / (n_permutations + 1)
-    )
+    p_mean = float((np.sum(null_mean_r >= real_mean) + 1) / (n_permutations + 1))
 
     logger.info(
         f"      Null mean r: {null_mean_r.mean():.4f} ± "
@@ -826,10 +804,7 @@ def main(cfg: DictConfig) -> None:
             for name, cfg in conditions.items()
             if cfg.get("embed_modality") not in available_modalities
         ]
-        logger.warning(
-            "Dropping conditions with missing embeddings: "
-            f"{', '.join(removed)}"
-        )
+        logger.warning(f"Dropping conditions with missing embeddings: {', '.join(removed)}")
     if not filtered_conditions:
         raise ValueError(
             "No remaining conditions after filtering by available embeddings. "
@@ -858,9 +833,7 @@ def main(cfg: DictConfig) -> None:
         if emod in embed_data:
             continue
         lyr = layer_for_modality[emod]
-        coco_ids, raw_embs = load_embeddings(
-            embeddings_dir, model_label, emod, lyr
-        )
+        coco_ids, raw_embs = load_embeddings(embeddings_dir, model_label, emod, lyr)
         n_comp = min(n_pca, raw_embs.shape[0], raw_embs.shape[1])
         pca = PCA(n_components=n_comp)
         reduced = pca.fit_transform(raw_embs)
@@ -882,9 +855,7 @@ def main(cfg: DictConfig) -> None:
             "computation consistency with visualization. "
             f"Missing: {design_matrix_mapping_file}"
         )
-    condition_to_coco = load_condition_to_cocoid_modality(
-        design_matrix_mapping_file
-    )
+    condition_to_coco = load_condition_to_cocoid_modality(design_matrix_mapping_file)
     modality_map = load_design_matrix_mapping(design_matrix_mapping_file)
 
     for subject in tqdm(subjects, desc="Subjects"):
@@ -903,8 +874,7 @@ def main(cfg: DictConfig) -> None:
         n_total_voxels = betas_full.shape[0]
         betas = betas_full[brain_mask, :]
         logger.info(
-            f"  Applied brain mask: kept {betas.shape[0]}/{n_total_voxels} "
-            f"in-brain voxels"
+            f"  Applied brain mask: kept {betas.shape[0]}/{n_total_voxels} in-brain voxels"
         )
 
         # Match visualization normalization: normalize full betas per run
@@ -926,8 +896,7 @@ def main(cfg: DictConfig) -> None:
             num_averages=nc_num_averages,
         )
         nc_corr_by_modality_full = {
-            m: np.sqrt(np.clip(v, 0, None) / 100.0)
-            for m, v in nc_by_modality_pct.items()
+            m: np.sqrt(np.clip(v, 0, None) / 100.0) for m, v in nc_by_modality_pct.items()
         }
 
         for m, nc_full in nc_corr_by_modality_full.items():
@@ -948,8 +917,7 @@ def main(cfg: DictConfig) -> None:
                     equal_nan=True,
                 ):
                     logger.warning(
-                        f"  Sanity check ({m}): NC is IDENTICAL to previous "
-                        f"subject (unexpected)."
+                        f"  Sanity check ({m}): NC is IDENTICAL to previous subject (unexpected)."
                     )
                 else:
                     logger.info(
@@ -986,9 +954,7 @@ def main(cfg: DictConfig) -> None:
         )
 
         # Run each encoding condition
-        for cond_name, cond_cfg in tqdm(
-            conditions.items(), desc="    Conditions", leave=False
-        ):
+        for cond_name, cond_cfg in tqdm(conditions.items(), desc="    Conditions", leave=False):
             emod = cond_cfg["embed_modality"]
             fmod = cond_cfg["fmri_modality"]
             logger.info(f"  Condition: {cond_name} ({emod} embed → {fmod} fMRI)")
@@ -996,9 +962,7 @@ def main(cfg: DictConfig) -> None:
             embed_ids, embed_feats = embed_data[emod]
             trial_cids, trial_betas, noise_ceiling_r, voxel_keep = fmri_cache[fmod]
 
-            X, Y, groups = align_single_trials(
-                embed_ids, embed_feats, trial_cids, trial_betas
-            )
+            X, Y, groups = align_single_trials(embed_ids, embed_feats, trial_cids, trial_betas)
             n_unique = len(np.unique(groups))
             logger.info(
                 f"    Aligned: {X.shape[0]} trials ({n_unique} stimuli), "
@@ -1008,24 +972,22 @@ def main(cfg: DictConfig) -> None:
             if n_outer_folds > 1:
                 min_required = max(n_outer_folds, n_inner_folds + 1)
                 requirement = (
-                    f"n_outer_folds={n_outer_folds} outer CV "
-                    f"+ {n_inner_folds}-fold inner CV"
+                    f"n_outer_folds={n_outer_folds} outer CV + {n_inner_folds}-fold inner CV"
                 )
             else:
                 min_required = max(n_inner_folds + 1, int(1 / test_size) + 1)
-                requirement = (
-                    f"test_size={test_size} holdout "
-                    f"+ {n_inner_folds}-fold inner CV"
-                )
+                requirement = f"test_size={test_size} holdout + {n_inner_folds}-fold inner CV"
             if n_unique < min_required:
                 logger.warning(
-                    f"    Too few unique stimuli ({n_unique}) for "
-                    f"{requirement} – skipping."
+                    f"    Too few unique stimuli ({n_unique}) for {requirement} – skipping."
                 )
                 continue
 
             result = run_encoding(
-                X, Y, frac_grid=frac_grid, groups=groups,
+                X,
+                Y,
+                frac_grid=frac_grid,
+                groups=groups,
                 test_size=test_size,
                 n_inner_folds=n_inner_folds,
                 n_outer_folds=n_outer_folds,
@@ -1047,9 +1009,7 @@ def main(cfg: DictConfig) -> None:
             # -- Permutation test -------------------------------------------
             perm_result: dict | None = None
             if n_permutations > 0:
-                logger.info(
-                    f"    Permutation test ({n_permutations} shuffles) …"
-                )
+                logger.info(f"    Permutation test ({n_permutations} shuffles) …")
                 perm_result = run_permutation_test(
                     X,
                     Y,
@@ -1080,12 +1040,18 @@ def main(cfg: DictConfig) -> None:
                     perm_result["null_mean_r"],
                 )
             save_voxelwise_nifti(
-                result["per_voxel_r"], voxel_keep, brain_mask,
-                brain_mask_img, cond_dir / "per_voxel_r.nii.gz",
+                result["per_voxel_r"],
+                voxel_keep,
+                brain_mask,
+                brain_mask_img,
+                cond_dir / "per_voxel_r.nii.gz",
             )
             save_voxelwise_nifti(
-                noise_ceiling_r, voxel_keep, brain_mask,
-                brain_mask_img, cond_dir / "noise_ceiling.nii.gz",
+                noise_ceiling_r,
+                voxel_keep,
+                brain_mask,
+                brain_mask_img,
+                cond_dir / "noise_ceiling.nii.gz",
             )
 
             summary_rows.append(
@@ -1101,23 +1067,14 @@ def main(cfg: DictConfig) -> None:
                     "n_outer_folds": result.get("n_outer_folds", np.nan),
                     "n_voxels": Y.shape[1],
                     "mean_r": result["mean_r"],
-                    "mean_noise_ceiling_r": result.get(
-                        "mean_noise_ceiling_r", np.nan
-                    ),
-                    "max_noise_ceiling_r": result.get(
-                        "max_noise_ceiling_r", np.nan
-                    ),
-                    "mean_normalized_r": result.get(
-                        "mean_normalized_r", np.nan
-                    ),
+                    "mean_noise_ceiling_r": result.get("mean_noise_ceiling_r", np.nan),
+                    "max_noise_ceiling_r": result.get("max_noise_ceiling_r", np.nan),
+                    "mean_normalized_r": result.get("mean_normalized_r", np.nan),
                     "p_value_mean_r": (
-                        perm_result["p_value_mean_r"]
-                        if perm_result is not None
-                        else np.nan
+                        perm_result["p_value_mean_r"] if perm_result is not None else np.nan
                     ),
                 }
             )
-
 
     # -- aggregate across subjects -------------------------------------------
     logger.info(f"\n{'=' * 60}")
@@ -1135,9 +1092,7 @@ def main(cfg: DictConfig) -> None:
 
         for modality in sorted(nc_sanity_df["modality"].unique()):
             vals_arr = np.asarray(
-                nc_sanity_df.loc[
-                    nc_sanity_df["modality"] == modality, "mean_nc_corr"
-                ],
+                nc_sanity_df.loc[nc_sanity_df["modality"] == modality, "mean_nc_corr"],
                 dtype=float,
             )
             vals_arr = np.round(vals_arr[np.isfinite(vals_arr)], 6)
@@ -1150,11 +1105,7 @@ def main(cfg: DictConfig) -> None:
     ]
     if "p_value_mean_r" in summary_df.columns:
         agg_cols += ["p_value_mean_r"]
-    agg = (
-        summary_df.groupby("condition")[agg_cols]
-        .agg(["mean", "std"])
-        .round(4)
-    )
+    agg = summary_df.groupby("condition")[agg_cols].agg(["mean", "std"]).round(4)
     logger.info(f"\n{agg.to_string()}")
 
     # Save

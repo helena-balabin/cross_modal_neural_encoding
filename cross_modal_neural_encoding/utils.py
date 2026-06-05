@@ -9,11 +9,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from loguru import logger
 import nibabel as nib
 import numpy as np
 import pandas as pd
-from loguru import logger
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Visualization Helpers
@@ -78,9 +77,7 @@ def signflip_pvalue_greater(
     observed = float(np.mean(vals))
 
     if n <= 16:
-        all_signs = np.array(
-            np.meshgrid(*[[-1.0, 1.0]] * n, indexing="ij")
-        ).reshape(n, -1).T
+        all_signs = np.array(np.meshgrid(*[[-1.0, 1.0]] * n, indexing="ij")).reshape(n, -1).T
         null_stats = np.mean(all_signs * vals[None, :], axis=1)
         p = (np.sum(null_stats >= observed) + 1) / (null_stats.size + 1)
         return float(p)
@@ -374,9 +371,7 @@ def build_fmri_cache(
         if nc_top_percent > 0:
             valid_nc = np.isfinite(nc_ceiling) & (nc_ceiling > 0)
             if valid_nc.any():
-                cutoff = np.nanpercentile(
-                    nc_ceiling[valid_nc], 100.0 - nc_top_percent
-                )
+                cutoff = np.nanpercentile(nc_ceiling[valid_nc], 100.0 - nc_top_percent)
                 voxel_keep = valid_nc & (nc_ceiling >= cutoff)
             else:
                 voxel_keep = np.isfinite(nc_ceiling)
@@ -454,15 +449,12 @@ def get_affine(fmriprep_dir: Path, subject: str) -> np.ndarray:
     bold_files = list(func_dirs[0].glob("*space-T1w*desc-preproc_bold.nii.gz"))
     if not bold_files:
         raise FileNotFoundError(
-            f"No T1w space BOLD files found for {subject}. "
-            f"Check fMRIPrep outputs."
+            f"No T1w space BOLD files found for {subject}. Check fMRIPrep outputs."
         )
 
     # Load affine from first T1w BOLD file
     affine = np.asarray(nib.load(str(bold_files[0])).affine)  # type: ignore
-    logger.info(
-        f"Loaded affine from fMRIPrep T1w (native) space: {bold_files[0].name}"
-    )
+    logger.info(f"Loaded affine from fMRIPrep T1w (native) space: {bold_files[0].name}")
     return affine
 
 
@@ -478,14 +470,9 @@ def load_brain_mask_img(fmriprep_dir: Path, subject: str) -> "nib.Nifti1Image":
     if not func_dirs:
         raise FileNotFoundError(f"No func directory found for {subject}")
 
-    mask_files = [
-        f for d in func_dirs
-        for f in d.glob("*space-T1w*_desc-brain_mask.nii.gz")
-    ]
+    mask_files = [f for d in func_dirs for f in d.glob("*space-T1w*_desc-brain_mask.nii.gz")]
     if not mask_files:
-        raise FileNotFoundError(
-            f"No T1w space brain mask found for {subject}."
-        )
+        raise FileNotFoundError(f"No T1w space brain mask found for {subject}.")
     return nib.load(mask_files[0])  # type: ignore[return-value]
 
 
@@ -552,14 +539,10 @@ def load_brain_mask(fmriprep_dir: Path, subject: str) -> np.ndarray:
         raise FileNotFoundError(f"No func directory found for {subject}")
 
     # Find T1w space brain mask file
-    mask_files = [
-        f for d in func_dirs
-        for f in d.glob("*space-T1w*_desc-brain_mask.nii.gz")
-    ]
+    mask_files = [f for d in func_dirs for f in d.glob("*space-T1w*_desc-brain_mask.nii.gz")]
     if not mask_files:
         raise FileNotFoundError(
-            f"No T1w space brain mask found for {subject}. "
-            f"Check fMRIPrep outputs."
+            f"No T1w space brain mask found for {subject}. Check fMRIPrep outputs."
         )
 
     # Load mask and flatten
@@ -568,8 +551,7 @@ def load_brain_mask(fmriprep_dir: Path, subject: str) -> np.ndarray:
     mask_1d = mask_data.reshape(-1)
 
     logger.info(
-        f"Brain mask: {int(np.asarray(mask_1d).sum())} in-brain voxels "
-        f"out of {len(mask_1d)} total"
+        f"Brain mask: {int(np.asarray(mask_1d).sum())} in-brain voxels out of {len(mask_1d)} total"
     )
     return mask_1d
 

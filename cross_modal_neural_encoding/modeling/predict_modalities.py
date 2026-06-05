@@ -17,18 +17,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, cast
 
-import hydra
-import numpy as np
-import pandas as pd
-import torch
 from datasets import load_dataset
+import hydra
 from loguru import logger
+import numpy as np
+from omegaconf import DictConfig
+import pandas as pd
 from sklearn.linear_model import Ridge
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
-from omegaconf import DictConfig
+import torch
 from torch import nn
 from torch.utils.data import DataLoader
+
 from cross_modal_neural_encoding.modeling.datasets import VGCOCODataset
 from cross_modal_neural_encoding.modeling.extract_embeddings import (
     _DTYPES,
@@ -136,8 +137,7 @@ def _load_embeddings(
     embeddings = np.load(layer_file)
     if embeddings.ndim != 2:
         raise ValueError(
-            f"Expected 2D embeddings for {model_label}/{modality}, "
-            f"got shape {embeddings.shape}."
+            f"Expected 2D embeddings for {model_label}/{modality}, got shape {embeddings.shape}."
         )
 
     return EmbeddingBundle(
@@ -188,8 +188,7 @@ def _filter_to_coco_ids(
 def _load_design_matrix_coco_ids(mapping_file: Path) -> list[int] | None:
     if not mapping_file.exists():
         logger.warning(
-            f"Design-matrix mapping file not found: {mapping_file}. "
-            "Using all available coco IDs."
+            f"Design-matrix mapping file not found: {mapping_file}. Using all available coco IDs."
         )
         return None
 
@@ -200,9 +199,7 @@ def _load_design_matrix_coco_ids(mapping_file: Path) -> list[int] | None:
             coco_col = candidate
             break
     if coco_col is None:
-        raise KeyError(
-            "Design mapping must contain a 'coco_id' or 'cocoid' column."
-        )
+        raise KeyError("Design mapping must contain a 'coco_id' or 'cocoid' column.")
 
     coco_ids: list[int] = []
     for raw in df[coco_col].astype(str):
@@ -218,8 +215,7 @@ def _load_design_matrix_coco_ids(mapping_file: Path) -> list[int] | None:
     coco_ids = sorted(set(coco_ids))
     if not coco_ids:
         logger.warning(
-            "No valid coco IDs parsed from design mapping file. "
-            "Using all available coco IDs."
+            "No valid coco IDs parsed from design mapping file. Using all available coco IDs."
         )
         return None
     return coco_ids
@@ -376,9 +372,7 @@ def _evaluate_cv(
     fold_scores: list[float] = []
 
     for fold_idx, (train_idx, test_idx) in enumerate(kf.split(X), start=1):
-        logger.info(
-            f"  Fold {fold_idx}/{n_splits}: train={len(train_idx)} test={len(test_idx)}"
-        )
+        logger.info(f"  Fold {fold_idx}/{n_splits}: train={len(train_idx)} test={len(test_idx)}")
         X_train, X_test = X[train_idx], X[test_idx]
         Y_train, Y_test = Y[train_idx], Y[test_idx]
 
@@ -407,8 +401,7 @@ def _evaluate_cv(
         else:
             if not standardize:
                 logger.warning(
-                    "MLP regressors are sensitive to scaling; "
-                    "consider standardize=true."
+                    "MLP regressors are sensitive to scaling; consider standardize=true."
                 )
 
             mlp_cfg = dict(mlp_config)
@@ -444,9 +437,7 @@ def _load_vg_coco_pairs(
     dataset = load_dataset(dataset_name, split="train", cache_dir=cache_dir)
     df = cast(pd.DataFrame, dataset.to_pandas())
     missing_cols = [
-        col
-        for col in (image_id_column, image_path_column, text_column)
-        if col not in df.columns
+        col for col in (image_id_column, image_path_column, text_column) if col not in df.columns
     ]
     if missing_cols:
         raise KeyError(f"Missing columns in dataset: {missing_cols}")
@@ -465,9 +456,7 @@ def _load_vg_coco_pairs(
             random_state=random_state,
         ).reset_index(drop=True)
 
-    logger.info(
-        f"Selected {len(sampled_df)} unique images with one caption each"
-    )
+    logger.info(f"Selected {len(sampled_df)} unique images with one caption each")
     return sampled_df
 
 
@@ -585,7 +574,9 @@ def _extract_on_the_fly_embeddings(
             raise ValueError(f"No vision layers extracted for {model_label}")
         vision = vision_embs[vision_layer]
         if embeddings_cache_dir is not None:
-            _save_cached_embeddings(embeddings_cache_dir, model_label, "vision", vision, vision_layer)
+            _save_cached_embeddings(
+                embeddings_cache_dir, model_label, "vision", vision, vision_layer
+            )
     else:
         logger.info(f"[{model_label}] Skipping vision embeddings (model_type='{model_type}').")
 
@@ -644,9 +635,7 @@ def _resolve_model_list(
     for label in model_labels:
         bundle = _load_embeddings(model_dirs[label], label, modality, layer)
         if bundle is None:
-            logger.warning(
-                f"Skipping {label} for {modality}: missing embeddings or layer."
-            )
+            logger.warning(f"Skipping {label} for {modality}: missing embeddings or layer.")
             continue
         resolved[label] = bundle
         logger.info(
@@ -754,9 +743,7 @@ def main(cfg: DictConfig) -> None:
         logger.info(f"Scanning embeddings under {embeddings_dir}")
         model_dirs = _discover_model_dirs(embeddings_dir)
         if not model_dirs:
-            raise ValueError(
-                f"No embedding model directories found under {embeddings_dir}."
-            )
+            raise ValueError(f"No embedding model directories found under {embeddings_dir}.")
         logger.info(f"Discovered {len(model_dirs)} model directories")
 
     if not use_vg_coco:
@@ -776,26 +763,20 @@ def main(cfg: DictConfig) -> None:
     if not text_cache or not vision_cache:
         raise ValueError("No valid text or vision models found to evaluate.")
 
-    logger.info(
-        f"Text models: {len(text_cache)} | Vision models: {len(vision_cache)}"
-    )
+    logger.info(f"Text models: {len(text_cache)} | Vision models: {len(vision_cache)}")
 
     if not use_vg_coco:
         for label, bundle in list(text_cache.items()):
             bundle = _aggregate_by_coco_id(bundle)
             bundle = _filter_to_coco_ids(bundle, desired_ids)
             text_cache[label] = bundle
-            logger.info(
-                f"Text {label}: {len(bundle.coco_ids)} stimuli after filtering"
-            )
+            logger.info(f"Text {label}: {len(bundle.coco_ids)} stimuli after filtering")
 
         for label, bundle in list(vision_cache.items()):
             bundle = _aggregate_by_coco_id(bundle)
             bundle = _filter_to_coco_ids(bundle, desired_ids)
             vision_cache[label] = bundle
-            logger.info(
-                f"Vision {label}: {len(bundle.coco_ids)} stimuli after filtering"
-            )
+            logger.info(f"Vision {label}: {len(bundle.coco_ids)} stimuli after filtering")
 
     n_splits = int(cfg.get("n_splits", 5))
     regressor = str(cfg.get("regressor", "mlp_relu")).lower()
@@ -805,9 +786,7 @@ def main(cfg: DictConfig) -> None:
     min_samples = int(cfg.get("min_samples", n_splits))
     mlp_config = dict(cfg.get("mlp", {}))
 
-    logger.info(
-        f"Regressor: {regressor} | standardize={standardize}"
-    )
+    logger.info(f"Regressor: {regressor} | standardize={standardize}")
 
     records: list[dict] = []
     total_pairs = len(text_cache) * len(vision_cache)
@@ -816,12 +795,8 @@ def main(cfg: DictConfig) -> None:
     for text_label, text_bundle in text_cache.items():
         for vision_label, vision_bundle in vision_cache.items():
             pair_idx += 1
-            logger.info(
-                f"[{pair_idx}/{total_pairs}] {text_label} ↔ {vision_label}"
-            )
-            common_ids = np.intersect1d(
-                text_bundle.coco_ids, vision_bundle.coco_ids
-            )
+            logger.info(f"[{pair_idx}/{total_pairs}] {text_label} ↔ {vision_label}")
+            common_ids = np.intersect1d(text_bundle.coco_ids, vision_bundle.coco_ids)
             if common_ids.size < min_samples:
                 logger.warning(
                     f"Skipping {text_label} -> {vision_label}: "
@@ -833,12 +808,8 @@ def main(cfg: DictConfig) -> None:
             vision_lookup = {int(cid): i for i, cid in enumerate(vision_bundle.coco_ids)}
             common_ids = np.asarray(sorted(common_ids), dtype=int)
 
-            X_text = text_bundle.embeddings[
-                [text_lookup[int(cid)] for cid in common_ids]
-            ]
-            Y_vision = vision_bundle.embeddings[
-                [vision_lookup[int(cid)] for cid in common_ids]
-            ]
+            X_text = text_bundle.embeddings[[text_lookup[int(cid)] for cid in common_ids]]
+            Y_vision = vision_bundle.embeddings[[vision_lookup[int(cid)] for cid in common_ids]]
 
             mean_r, std_r, fold_scores = _evaluate_cv(
                 X_text,
@@ -850,9 +821,7 @@ def main(cfg: DictConfig) -> None:
                 regressor=regressor,
                 mlp_config=mlp_config,
             )
-            logger.info(
-                f"  text→vision mean r = {mean_r:.4f} (std {std_r:.4f})"
-            )
+            logger.info(f"  text→vision mean r = {mean_r:.4f} (std {std_r:.4f})")
 
             record = {
                 "direction": "text_to_vision",
@@ -883,9 +852,7 @@ def main(cfg: DictConfig) -> None:
                 regressor=regressor,
                 mlp_config=mlp_config,
             )
-            logger.info(
-                f"  vision→text mean r = {mean_r:.4f} (std {std_r:.4f})"
-            )
+            logger.info(f"  vision→text mean r = {mean_r:.4f} (std {std_r:.4f})")
 
             record = {
                 "direction": "vision_to_text",

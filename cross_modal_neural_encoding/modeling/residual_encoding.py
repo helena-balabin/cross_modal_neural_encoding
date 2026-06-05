@@ -29,37 +29,36 @@ Hydra config: ``configs/modeling/residual_encoding.yaml``
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import hydra
-import numpy as np
-import pandas as pd
 from loguru import logger
+import numpy as np
 from omegaconf import DictConfig, OmegaConf
+import pandas as pd
 from sklearn.decomposition import PCA
 from tqdm import tqdm
 
 from cross_modal_neural_encoding.config import PROJ_ROOT
 from cross_modal_neural_encoding.modeling.neural_encoding import (
     align_single_trials,
-    build_structural_feature_vectors,
     build_events_from_stimorder,
+    build_structural_feature_vectors,
+    load_condition_to_cocoid_modality,
     load_designinfo_stimulus_ids_and_num_runs,
     load_embeddings,
     load_fmri,
-    load_condition_to_cocoid_modality,
     run_encoding,
 )
 from cross_modal_neural_encoding.utils import (
-    normalize_betas_per_run,
+    build_fmri_cache,
     compute_nc_by_modality,
     get_graph_metric,
-    load_design_matrix_mapping,
     load_brain_mask,
     load_brain_mask_img,
+    load_design_matrix_mapping,
+    normalize_betas_per_run,
     save_voxelwise_nifti,
-    build_fmri_cache,
 )
 
 
@@ -81,9 +80,7 @@ def load_structural_targets(
     dataset = load_dataset(dataset_name, split=split)
 
     if coco_id_column not in dataset.column_names:
-        raise KeyError(
-            f"COCO ID column '{coco_id_column}' not found in dataset."
-        )
+        raise KeyError(f"COCO ID column '{coco_id_column}' not found in dataset.")
 
     coco_ids = np.array([int(cid) for cid in dataset[coco_id_column]])
 
@@ -91,24 +88,12 @@ def load_structural_targets(
     vision_graphs = dataset[vision_graph_column]
 
     targets = {
-        "amr_n_nodes": np.array([
-            get_graph_metric(g, "num_nodes") for g in text_graphs
-        ]),
-        "amr_n_edges": np.array([
-            get_graph_metric(g, "num_edges") for g in text_graphs
-        ]),
-        "amr_graph_depth": np.array([
-            get_graph_metric(g, "depth") for g in text_graphs
-        ]),
-        "coco_a_nodes": np.array([
-            get_graph_metric(g, "num_nodes") for g in vision_graphs
-        ]),
-        "coco_a_edges": np.array([
-            get_graph_metric(g, "num_edges") for g in vision_graphs
-        ]),
-        "coco_a_graph_depth": np.array([
-            get_graph_metric(g, "depth") for g in vision_graphs
-        ]),
+        "amr_n_nodes": np.array([get_graph_metric(g, "num_nodes") for g in text_graphs]),
+        "amr_n_edges": np.array([get_graph_metric(g, "num_edges") for g in text_graphs]),
+        "amr_graph_depth": np.array([get_graph_metric(g, "depth") for g in text_graphs]),
+        "coco_a_nodes": np.array([get_graph_metric(g, "num_nodes") for g in vision_graphs]),
+        "coco_a_edges": np.array([get_graph_metric(g, "num_edges") for g in vision_graphs]),
+        "coco_a_graph_depth": np.array([get_graph_metric(g, "depth") for g in vision_graphs]),
     }
 
     logger.info(f"Loaded structural targets for {len(coco_ids)} stimuli")
@@ -162,9 +147,7 @@ def main(cfg: DictConfig) -> None:
         split=cfg.get("dataset_split", "train"),
         coco_id_column=cfg.get("coco_id_column", "cocoid"),
         text_graph_column=cfg.get("text_graph_column", "amr_graphs"),
-        vision_graph_column=cfg.get(
-            "vision_graph_column", "action_image_graphs"
-        ),
+        vision_graph_column=cfg.get("vision_graph_column", "action_image_graphs"),
     )
 
     # -- load & PCA embeddings (shared across subjects) ----------------------
@@ -192,8 +175,7 @@ def main(cfg: DictConfig) -> None:
 
     if not design_matrix_mapping_file.exists():
         raise FileNotFoundError(
-            "design_matrix_mapping_file is required. "
-            f"Missing: {design_matrix_mapping_file}"
+            f"design_matrix_mapping_file is required. Missing: {design_matrix_mapping_file}"
         )
     condition_to_coco = load_condition_to_cocoid_modality(design_matrix_mapping_file)
     modality_map = load_design_matrix_mapping(design_matrix_mapping_file)
@@ -217,13 +199,10 @@ def main(cfg: DictConfig) -> None:
             betas_full_trials, stimulus_ids, modality_map, num_averages=nc_num_averages
         )
         nc_corr_by_modality_full = {
-            m: np.sqrt(np.clip(v, 0, None) / 100.0)
-            for m, v in nc_by_modality_pct.items()
+            m: np.sqrt(np.clip(v, 0, None) / 100.0) for m, v in nc_by_modality_pct.items()
         }
 
-        events_df = build_events_from_stimorder(
-            stimulus_ids, condition_to_coco, subject
-        )
+        events_df = build_events_from_stimorder(stimulus_ids, condition_to_coco, subject)
 
         # Build per-modality fMRI cache (shared helper)
         fmri_cache = build_fmri_cache(
@@ -236,24 +215,18 @@ def main(cfg: DictConfig) -> None:
         )
 
         # Run each condition with residualised embeddings
-        for cond_name, cond_cfg in tqdm(
-            conditions.items(), desc="    Conditions", leave=False
-        ):
+        for cond_name, cond_cfg in tqdm(conditions.items(), desc="    Conditions", leave=False):
             emod = cond_cfg["embed_modality"]
             fmod = cond_cfg["fmri_modality"]
 
             embed_ids, embed_feats = embed_data[emod]
             trial_cids, trial_betas, noise_ceiling_r, voxel_keep = fmri_cache[fmod]
 
-            X, Y, groups = align_single_trials(
-                embed_ids, embed_feats, trial_cids, trial_betas
-            )
+            X, Y, groups = align_single_trials(embed_ids, embed_feats, trial_cids, trial_betas)
 
             # Build structural feature vectors s ∈ ℝ³ for each trial,
             # aligned to the study's 252 COCO IDs only.
-            s = build_structural_feature_vectors(
-                groups, struct_targets, target_coco_ids, emod
-            )
+            s = build_structural_feature_vectors(groups, struct_targets, target_coco_ids, emod)
             valid_s = np.all(np.isfinite(s), axis=1)
             if not valid_s.all():
                 logger.warning(
@@ -264,9 +237,7 @@ def main(cfg: DictConfig) -> None:
 
             n_unique = len(np.unique(groups))
             if n_unique < max(n_outer_folds, n_inner_folds + 1):
-                logger.warning(
-                    f"    Too few unique stimuli ({n_unique}) — skipping {cond_name}."
-                )
+                logger.warning(f"    Too few unique stimuli ({n_unique}) — skipping {cond_name}.")
                 continue
 
             # Variants: real s, and optionally permuted s (control)
@@ -281,7 +252,8 @@ def main(cfg: DictConfig) -> None:
                     f"{emod} embed → {fmod} fMRI (residualised)"
                 )
                 result = run_encoding(
-                    X, Y,
+                    X,
+                    Y,
                     frac_grid=frac_grid,
                     groups=groups,
                     test_size=test_size,
@@ -308,12 +280,18 @@ def main(cfg: DictConfig) -> None:
                     result["best_frac_per_voxel"],
                 )
                 save_voxelwise_nifti(
-                    result["per_voxel_r"], voxel_keep, brain_mask,
-                    brain_mask_img, cond_dir / "per_voxel_r.nii.gz",
+                    result["per_voxel_r"],
+                    voxel_keep,
+                    brain_mask,
+                    brain_mask_img,
+                    cond_dir / "per_voxel_r.nii.gz",
                 )
                 save_voxelwise_nifti(
-                    noise_ceiling_r, voxel_keep, brain_mask,
-                    brain_mask_img, cond_dir / "noise_ceiling.nii.gz",
+                    noise_ceiling_r,
+                    voxel_keep,
+                    brain_mask,
+                    brain_mask_img,
+                    cond_dir / "noise_ceiling.nii.gz",
                 )
 
                 summary_rows.append(
@@ -329,12 +307,8 @@ def main(cfg: DictConfig) -> None:
                         "n_outer_folds": result.get("n_outer_folds", np.nan),
                         "n_voxels": Y.shape[1],
                         "mean_r": result["mean_r"],
-                        "mean_noise_ceiling_r": result.get(
-                            "mean_noise_ceiling_r", np.nan
-                        ),
-                        "max_noise_ceiling_r": result.get(
-                            "max_noise_ceiling_r", np.nan
-                        ),
+                        "mean_noise_ceiling_r": result.get("mean_noise_ceiling_r", np.nan),
+                        "max_noise_ceiling_r": result.get("max_noise_ceiling_r", np.nan),
                         "mean_normalized_r": result.get("mean_normalized_r", np.nan),
                         "p_value_mean_r": np.nan,
                     }
@@ -348,14 +322,8 @@ def main(cfg: DictConfig) -> None:
     results_dir = output_dir / model_label
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    agg_cols = [
-        "mean_r", "mean_noise_ceiling_r", "max_noise_ceiling_r", "mean_normalized_r"
-    ]
-    agg = (
-        summary_df.groupby("condition")[agg_cols]
-        .agg(["mean", "std"])
-        .round(4)
-    )
+    agg_cols = ["mean_r", "mean_noise_ceiling_r", "max_noise_ceiling_r", "mean_normalized_r"]
+    agg = summary_df.groupby("condition")[agg_cols].agg(["mean", "std"]).round(4)
     logger.info(f"\n{agg.to_string()}")
 
     summary_path = results_dir / "summary.csv"

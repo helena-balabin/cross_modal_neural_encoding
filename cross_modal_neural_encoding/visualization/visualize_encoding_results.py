@@ -14,24 +14,24 @@ Usage::
 
 from __future__ import annotations
 
-from pathlib import Path
 from collections import Counter
+from pathlib import Path
 from typing import Any, Iterable
 
 import hydra
+from loguru import logger
+from matplotlib.axes import Axes
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
-from matplotlib.axes import Axes
-from loguru import logger
 from omegaconf import DictConfig
+import pandas as pd
 
 from cross_modal_neural_encoding.config import FIGURES_DIR, PROJ_ROOT
 from cross_modal_neural_encoding.utils import (
     CONDITION_LABELS,
     configure_plot_fonts,
-    significance_label,
     signflip_pvalue_greater,
+    significance_label,
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -458,7 +458,9 @@ def _plot_model_row(
         if p_value_col in summary_df.columns:
             pval_table = (
                 summary_df[summary_df["condition"].isin(conditions)]
-                .pivot_table(index="subject", columns="condition", values=p_value_col, aggfunc="mean")
+                .pivot_table(
+                    index="subject", columns="condition", values=p_value_col, aggfunc="mean"
+                )
                 .reindex(index=subject_table.index, columns=conditions)
             )
         else:
@@ -474,9 +476,7 @@ def _plot_model_row(
             total_width = 0.82
             bar_w = min(0.16, total_width / n_subj)
             offsets = (np.arange(n_subj) - (n_subj - 1) / 2.0) * bar_w
-            subject_colors = [
-                SUBJECT_PALETTE[i % len(SUBJECT_PALETTE)] for i in range(n_subj)
-            ]
+            subject_colors = [SUBJECT_PALETTE[i % len(SUBJECT_PALETTE)] for i in range(n_subj)]
 
             for s_idx, subject in enumerate(subjects):
                 heights = np.asarray(subject_table.loc[subject].values, dtype=float)
@@ -874,15 +874,12 @@ def plot_subject_mean_across_models(
         .sort_index()
     )
     if p_value_col in combined.columns:
-        subject_pvals = (
-            combined.pivot_table(
-                index="subject",
-                columns="condition",
-                values=p_value_col,
-                aggfunc="mean",
-            )
-            .reindex(index=subject_table.index, columns=conditions)
-        )
+        subject_pvals = combined.pivot_table(
+            index="subject",
+            columns="condition",
+            values=p_value_col,
+            aggfunc="mean",
+        ).reindex(index=subject_table.index, columns=conditions)
     else:
         subject_pvals = pd.DataFrame(
             np.nan,
@@ -1028,9 +1025,7 @@ def main(cfg: DictConfig) -> None:
 
         model_entries = _collect_model_dirs(run_dir)
         if not model_entries:
-            raise FileNotFoundError(
-                f"No model subfolders with aggregated.csv found in: {run_dir}"
-            )
+            raise FileNotFoundError(f"No model subfolders with aggregated.csv found in: {run_dir}")
 
         run_arrays_present = any(entry["run_array"] is not None for entry in model_entries)
         if run_arrays_present:
@@ -1048,9 +1043,7 @@ def main(cfg: DictConfig) -> None:
             try:
                 agg_df = load_aggregated(agg_path)
             except (OSError, pd.errors.ParserError) as exc:
-                logger.warning(
-                    f"Skipping {child.name}: failed to load aggregated.csv ({exc})"
-                )
+                logger.warning(f"Skipping {child.name}: failed to load aggregated.csv ({exc})")
                 continue
 
             summary_path = child / "summary.csv"
@@ -1070,9 +1063,7 @@ def main(cfg: DictConfig) -> None:
             )
 
         if not model_results:
-            raise FileNotFoundError(
-                f"No model subfolders with aggregated.csv found in: {run_dir}"
-            )
+            raise FileNotFoundError(f"No model subfolders with aggregated.csv found in: {run_dir}")
     else:
         path = Path(cfg.aggregated_csv)
         if not path.exists():
@@ -1141,9 +1132,7 @@ def main(cfg: DictConfig) -> None:
 
     if bool(cfg.get("plot_grouped_models", True)):
         grouped_output = (
-            Path(cfg.grouped_output_path)
-            if cfg.get("grouped_output_path", None)
-            else None
+            Path(cfg.grouped_output_path) if cfg.get("grouped_output_path", None) else None
         )
         plot_grouped_model_means(
             model_results,

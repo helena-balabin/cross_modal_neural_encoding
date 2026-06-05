@@ -22,18 +22,18 @@ from __future__ import annotations
 from pathlib import Path
 
 import hydra
+from loguru import logger
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
-from loguru import logger
 from omegaconf import DictConfig
+import pandas as pd
 
 from cross_modal_neural_encoding.config import FIGURES_DIR, PROJ_ROOT
 from cross_modal_neural_encoding.utils import (
     CONDITION_LABELS,
     configure_plot_fonts,
-    significance_label,
     signflip_pvalue_greater,
+    significance_label,
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -41,9 +41,9 @@ from cross_modal_neural_encoding.utils import (
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Colours for the three bar groups
-COLOR_STANDARD = "#7EAEDB"   # blue — unablated baseline
-COLOR_RESIDUAL = "#E88989"   # red  — structure residualised
-COLOR_PERMUTED = "#EFBF63"   # amber — permuted-s control
+COLOR_STANDARD = "#7EAEDB"  # blue — unablated baseline
+COLOR_RESIDUAL = "#E88989"  # red  — structure residualised
+COLOR_PERMUTED = "#EFBF63"  # amber — permuted-s control
 
 configure_plot_fonts()
 
@@ -101,9 +101,7 @@ def plot_residual_comparison(
     res_conds = set(residual_df["condition"].unique())
     conditions = [c for c in base_conditions if c in std_conds and c in res_conds]
     permuted_conditions = [f"permuted_{c}" for c in conditions]
-    has_permuted = show_permuted and all(
-        pc in res_conds for pc in permuted_conditions
-    )
+    has_permuted = show_permuted and all(pc in res_conds for pc in permuted_conditions)
 
     n_conds = len(conditions)
     n_bars = 3 if has_permuted else 2
@@ -127,15 +125,13 @@ def plot_residual_comparison(
             elif bi == 1:
                 vals = _condition_means(residual_df, [cond], metric)[cond]
             else:
-                vals = _condition_means(
-                    residual_df, [f"permuted_{cond}"], metric
-                )[f"permuted_{cond}"]
+                vals = _condition_means(residual_df, [f"permuted_{cond}"], metric)[
+                    f"permuted_{cond}"
+                ]
 
             finite = vals[np.isfinite(vals)]
             means.append(float(np.mean(finite)) if len(finite) else np.nan)
-            sems.append(
-                float(np.std(finite) / np.sqrt(len(finite))) if len(finite) > 1 else 0.0
-            )
+            sems.append(float(np.std(finite) / np.sqrt(len(finite))) if len(finite) > 1 else 0.0)
             pvals.append(_pvalue(vals))
 
         means_arr = np.array(means)
@@ -167,8 +163,9 @@ def plot_residual_comparison(
                 )
 
     ax.axhline(0, color="black", linewidth=0.6, zorder=2)
-    ax.axhline(1.0, color="grey", linewidth=0.7, linestyle="--", zorder=1,
-               label="NC reference (1.0)")
+    ax.axhline(
+        1.0, color="grey", linewidth=0.7, linestyle="--", zorder=1, label="NC reference (1.0)"
+    )
 
     ax.set_xticks(x)
     ax.set_xticklabels(
@@ -207,9 +204,7 @@ def plot_ablation_delta(
     res_conds = set(residual_df["condition"].unique())
     conditions = [c for c in base_conditions if c in std_conds and c in res_conds]
     permuted_conditions = [f"permuted_{c}" for c in conditions]
-    has_permuted = show_permuted and all(
-        pc in res_conds for pc in permuted_conditions
-    )
+    has_permuted = show_permuted and all(pc in res_conds for pc in permuted_conditions)
 
     n_conds = len(conditions)
     n_bars = 2 if has_permuted else 1
@@ -220,11 +215,16 @@ def plot_ablation_delta(
 
     fig, ax = plt.subplots(figsize=(2.4 * n_conds, 4.0))
 
-    for bi, (color, desc, cond_list) in enumerate([
-        (COLOR_RESIDUAL, "Residualised − Standard", conditions),
-        *([( COLOR_PERMUTED, "Permuted − Standard", permuted_conditions)]
-          if has_permuted else []),
-    ]):
+    for bi, (color, desc, cond_list) in enumerate(
+        [
+            (COLOR_RESIDUAL, "Residualised − Standard", conditions),
+            *(
+                [(COLOR_PERMUTED, "Permuted − Standard", permuted_conditions)]
+                if has_permuted
+                else []
+            ),
+        ]
+    ):
         deltas, sems = [], []
         for cond, res_cond in zip(conditions, cond_list):
             std_vals = _condition_means(standard_df, [cond], metric)[cond]
@@ -234,9 +234,7 @@ def plot_ablation_delta(
             d = res_vals[:n] - std_vals[:n]
             finite = d[np.isfinite(d)]
             deltas.append(float(np.mean(finite)) if len(finite) else np.nan)
-            sems.append(
-                float(np.std(finite) / np.sqrt(len(finite))) if len(finite) > 1 else 0.0
-            )
+            sems.append(float(np.std(finite) / np.sqrt(len(finite))) if len(finite) > 1 else 0.0)
 
         deltas_arr = np.array(deltas)
         sems_arr = np.array(sems)
@@ -259,9 +257,7 @@ def plot_ablation_delta(
         fontsize=9,
     )
     ax.set_ylabel("Δ noise-ceiling-normalised r", fontsize=10)
-    ax.set_title(
-        "Ablation effect: residualised minus standard encoding accuracy", fontsize=11
-    )
+    ax.set_title("Ablation effect: residualised minus standard encoding accuracy", fontsize=11)
     ax.legend(fontsize=8, framealpha=0.8)
     ax.spines[["top", "right"]].set_visible(False)
     ax.grid(axis="y", alpha=0.25, zorder=0)

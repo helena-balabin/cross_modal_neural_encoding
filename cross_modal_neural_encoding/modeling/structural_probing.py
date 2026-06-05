@@ -13,20 +13,22 @@ Embeddings are **pre-projection** encoder hidden states saved by the extraction 
 
 from __future__ import annotations
 
-import hydra
-import numpy as np
-import pandas as pd
-import torch
+from pathlib import Path
+from typing import cast
+
 from himalaya.backend import set_backend
 from himalaya.ridge import RidgeCV as HimalayaRidgeCV
+import hydra
 from loguru import logger
-from pathlib import Path
-from sklearn.metrics import r2_score
+import numpy as np
 from omegaconf import DictConfig
-from typing import cast
+import pandas as pd
 from PIL import Image
+from sklearn.metrics import r2_score
+import torch
 
 from cross_modal_neural_encoding.utils import get_graph_metric
+
 from .extract_embeddings import (
     _DTYPES,
     _get_language_model,
@@ -67,18 +69,14 @@ def _auto_select_layer_from_model(
         try:
             layers = _get_vision_layers(model)
         except AttributeError as exc:
-            logger.warning(
-                f"Failed to inspect vision layers for auto selection: {exc}"
-            )
+            logger.warning(f"Failed to inspect vision layers for auto selection: {exc}")
             return None
         return _pick_middle_layer(list(range(len(layers))))
     if modality == "text":
         try:
             lm = _get_language_model(model)
         except AttributeError as exc:
-            logger.warning(
-                f"Failed to inspect text layers for auto selection: {exc}"
-            )
+            logger.warning(f"Failed to inspect text layers for auto selection: {exc}")
             return None
 
         if hasattr(lm, "layers"):
@@ -155,17 +153,11 @@ def _extract_graph_labels(
     target: str,
 ) -> np.ndarray:
     if target == "num_nodes":
-        return np.asarray(
-            df[graph_col].apply(lambda g: get_graph_metric(g, "num_nodes")).values
-        )
+        return np.asarray(df[graph_col].apply(lambda g: get_graph_metric(g, "num_nodes")).values)
     if target == "num_edges":
-        return np.asarray(
-            df[graph_col].apply(lambda g: get_graph_metric(g, "num_edges")).values
-        )
+        return np.asarray(df[graph_col].apply(lambda g: get_graph_metric(g, "num_edges")).values)
     if target == "depth":
-        return np.asarray(
-            df[graph_col].apply(lambda g: get_graph_metric(g, "depth")).values
-        )
+        return np.asarray(df[graph_col].apply(lambda g: get_graph_metric(g, "depth")).values)
     raise ValueError(f"Unknown target: {target}")
 
 
@@ -226,17 +218,13 @@ def run_graph_probing(
             X_valid = X[valid_mask]
 
             if len(y) == 0:
-                logger.warning(
-                    f"No valid examples for {graph_col}:{target}; skipping."
-                )
+                logger.warning(f"No valid examples for {graph_col}:{target}; skipping.")
                 continue
 
             fold_r2: list[float] = []
             for fold in range(n_outer_folds):
                 seed = random_seed + fold * 1000
-                train_idx, val_idx = _random_train_val_split(
-                    len(y), train_ratio, seed
-                )
+                train_idx, val_idx = _random_train_val_split(len(y), train_ratio, seed)
 
                 X_train, X_val = X_valid[train_idx], X_valid[val_idx]
                 y_train, y_val = y[train_idx], y[val_idx]
@@ -257,8 +245,6 @@ def run_graph_probing(
                 logger.info(f"{key}: R² = {results[key]:.4f}")
 
     return results, fold_scores
-
-
 
 
 @hydra.main(
@@ -295,7 +281,6 @@ def main(cfg: DictConfig) -> None:
     layer_cfg = cfg.get("layer", None)
     vision_layer_cfg = cfg.get("vision_layer", None)
     text_layer_cfg = cfg.get("text_layer", None)
-    n_inner_folds = cfg.n_inner_folds
 
     dataset_name = cfg.get(
         "dataset_hf_identifier",
@@ -311,9 +296,7 @@ def main(cfg: DictConfig) -> None:
                 coco_id_col = fallback
                 break
     if coco_id_col not in df.columns:
-        raise KeyError(
-            f"COCO ID column '{coco_id_col}' not found in dataset columns"
-        )
+        raise KeyError(f"COCO ID column '{coco_id_col}' not found in dataset columns")
 
     text_graph_columns = cfg.get(
         "text_graph_columns",
@@ -356,9 +339,7 @@ def main(cfg: DictConfig) -> None:
     if vision_layer_cfg is not None or text_layer_cfg is not None:
         vision_layer = int(vision_layer_cfg) if vision_layer_cfg is not None else None
         text_layer = int(text_layer_cfg) if text_layer_cfg is not None else None
-    elif layer_cfg is None or (
-        isinstance(layer_cfg, str) and layer_cfg.lower() == "auto"
-    ):
+    elif layer_cfg is None or (isinstance(layer_cfg, str) and layer_cfg.lower() == "auto"):
         vision_layer = _auto_select_layer_from_model(model, "vision")
         text_layer = _auto_select_layer_from_model(model, "text")
     else:

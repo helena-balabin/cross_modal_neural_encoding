@@ -21,17 +21,17 @@ Hydra config: ``configs/modeling/extract_embeddings.yaml``
 
 from __future__ import annotations
 
-import gc
 from dataclasses import dataclass
+import gc
 from pathlib import Path
 
 import hydra
-import numpy as np
-import pandas as pd
-import torch
 from loguru import logger
+import numpy as np
 from omegaconf import DictConfig
+import pandas as pd
 from PIL import Image
+import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import (
@@ -43,7 +43,6 @@ from transformers import (
 )
 
 from cross_modal_neural_encoding.config import PROJ_ROOT
-
 
 # ---------------------------------------------------------------------------
 # Forward-hook helper for capturing intermediate hidden states
@@ -217,8 +216,7 @@ def _load_processor(
                 )
             except (OSError, ValueError, EnvironmentError) as exc:
                 logger.warning(
-                    "AutoTokenizer loading failed for "
-                    f"{name}: {type(exc).__name__}: {exc}."
+                    f"AutoTokenizer loading failed for {name}: {type(exc).__name__}: {exc}."
                 )
                 return None
 
@@ -243,14 +241,10 @@ def _load_processor(
                 )
                 if hasattr(proc, "image_processor"):
                     return proc
-                logger.warning(
-                    "AutoProcessor for "
-                    f"{name} does not expose image_processor."
-                )
+                logger.warning(f"AutoProcessor for {name} does not expose image_processor.")
             except (OSError, ValueError, EnvironmentError) as exc:
                 logger.warning(
-                    "AutoProcessor loading failed for "
-                    f"{name}: {type(exc).__name__}: {exc}."
+                    f"AutoProcessor loading failed for {name}: {type(exc).__name__}: {exc}."
                 )
             return None
 
@@ -299,10 +293,7 @@ def _load_processor(
     if proc is not None:
         return proc
 
-    raise OSError(
-        "Failed to load a compatible processor for "
-        f"{model_name}."
-    )
+    raise OSError(f"Failed to load a compatible processor for {model_name}.")
 
 
 def _load_model(
@@ -556,10 +547,9 @@ def _load_stimuli(
     if dataset_name:
         dataset_split = cfg.get("dataset_split", "train")
         dataset_cache_dir = cfg.get("dataset_cache_dir", None)
-        logger.info(
-            f"Loading metadata from dataset {dataset_name} (split={dataset_split})"
-        )
+        logger.info(f"Loading metadata from dataset {dataset_name} (split={dataset_split})")
         from datasets import load_dataset as _load_dataset
+
         dataset = _load_dataset(dataset_name, split=dataset_split, cache_dir=dataset_cache_dir)
         df = dataset.to_pandas()
         missing_cols = [
@@ -594,9 +584,7 @@ def _load_stimuli(
             unique_images.append(img)
 
     broadcast = np.array([seen[f] for f in filenames])
-    logger.info(
-        f"  {len(df)} rows  ·  {len(unique_images)} unique images  ·  {len(texts)} texts"
-    )
+    logger.info(f"  {len(df)} rows  ·  {len(unique_images)} unique images  ·  {len(texts)} texts")
     return texts, coco_ids, unique_images, broadcast
 
 
@@ -672,9 +660,7 @@ def main(cfg: DictConfig) -> None:
     )
 
     # -- iterate over models ------------------------------------------------
-    model_names: list[str] = (
-        [cfg.models] if isinstance(cfg.models, str) else list(cfg.models)
-    )
+    model_names: list[str] = [cfg.models] if isinstance(cfg.models, str) else list(cfg.models)
 
     for model_name in model_names:
         label = model_name.replace("/", "--")
