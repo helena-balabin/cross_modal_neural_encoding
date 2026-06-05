@@ -3,6 +3,12 @@
 # Hydra ouputs
 /outputs/
 
+# Scripts
+/scripts/
+
+# Claude
+/.claude/
+
 # Mac OS-specific storage files
 .DS_Store
 
