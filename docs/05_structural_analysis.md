@@ -54,4 +54,4 @@ Performance is the coefficient of determination R² averaged across outer test f
 Comparing R² between text and vision encoders reveals whether compositional graph properties are represented equally across modalities. The paper finds that text encoders represent these properties substantially better than vision encoders.
 
 
-The residual encoding analysis that uses these structural targets is documented separately: see [Residual Neural Encoding](residual_encoding.md).
+The residual encoding analysis that uses these structural targets is documented separately: see [Residual Neural Encoding](06_residual_encoding.md).

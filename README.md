@@ -42,7 +42,6 @@ Full documentation: `docs/` (built with mkdocs).
 ├── models/                     <- Saved model checkpoints
 ├── outputs/                    <- Pipeline results (per-analysis subdirs)
 ├── reports/figures/            <- Generated figures
-├── scripts/                    <- SLURM job submission scripts
 │
 ├── pyproject.toml              <- Package metadata and tool configuration (ruff)
 └── uv.lock                     <- Locked dependency versions
@@ -50,14 +49,14 @@ Full documentation: `docs/` (built with mkdocs).
 
 ## Pipeline
 
-```
+```text
 1. Extract VLM embeddings      →  cross_modal_neural_encoding/modeling/extract_embeddings.py
 2. Run neural encoding          →  cross_modal_neural_encoding/modeling/neural_encoding.py
 3. Predict modalities           →  cross_modal_neural_encoding/modeling/predict_modalities.py
 4. Visualise results            →  cross_modal_neural_encoding/visualization/
 ```
 
-Each step is configured via its corresponding YAML file in `configs/` and submitted to the cluster via `scripts/`.
+Each step is configured via its corresponding YAML file in `configs/`.
 
 ## Setup
 

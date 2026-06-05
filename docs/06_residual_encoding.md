@@ -3,7 +3,7 @@
 ## Overview
 
 Residual neural encoding (§3.3) provides a causal test of whether the
-compositional structural properties identified by [structural probing](structural_analysis.md)
+compositional structural properties identified by [structural probing](05_structural_analysis.md)
 are what carry cross-modal brain alignment.  The intuition: if structure is the
 substrate of cross-modal correspondence, then VLM embeddings stripped of their
 structural component should **retain within-modality alignment** but **lose

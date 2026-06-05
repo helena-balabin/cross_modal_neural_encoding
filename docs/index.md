@@ -16,6 +16,9 @@ fMRI responses are measured while human participants process COCO images and the
 | [Datasets](02_datasets.md) | fMRI acquisition, stimuli, BIDS structure |
 | [Feature Extraction](03_feature_extraction.md) | VLM architecture, embedding extraction, pooling |
 | [Neural Encoding](04_neural_encoding.md) | Ridge regression, cross-validation, permutation tests |
+| [Structural Analysis](05_structural_analysis.md) | Graph-based structural probing of VLM representations |
+| [Residual Neural Encoding](06_residual_encoding.md) | Structure-targeted residual ablation |
+| [Models](07_models.md) | VLM model details |
 | [Evaluation & Statistics](08_evaluation_and_statistics.md) | Noise ceiling, metrics, significance testing |
 | [Configuration](09_configuration.md) | Hydra parameters, reproducibility |
 | [Visualization](10_visualization.md) | Surface projection, result figures |
