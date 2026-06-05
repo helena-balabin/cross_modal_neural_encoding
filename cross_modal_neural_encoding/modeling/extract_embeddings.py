@@ -41,7 +41,6 @@ from transformers import (
     AutoProcessor,
     AutoTokenizer,
 )
-from datasets import load_dataset
 
 from cross_modal_neural_encoding.config import PROJ_ROOT
 
@@ -216,7 +215,7 @@ def _load_processor(
                     cache_dir=cache_dir,
                     use_fast=False,
                 )
-            except Exception as exc:
+            except (OSError, ValueError, EnvironmentError) as exc:
                 logger.warning(
                     "AutoTokenizer loading failed for "
                     f"{name}: {type(exc).__name__}: {exc}."
@@ -230,7 +229,7 @@ def _load_processor(
                     trust_remote_code=True,
                     cache_dir=cache_dir,
                 )
-            except Exception as exc:
+            except (OSError, ValueError, EnvironmentError) as exc:
                 logger.warning(
                     "AutoImageProcessor loading failed for "
                     f"{name}: {type(exc).__name__}: {exc}. "
@@ -248,7 +247,7 @@ def _load_processor(
                     "AutoProcessor for "
                     f"{name} does not expose image_processor."
                 )
-            except Exception as exc:
+            except (OSError, ValueError, EnvironmentError) as exc:
                 logger.warning(
                     "AutoProcessor loading failed for "
                     f"{name}: {type(exc).__name__}: {exc}."
@@ -269,7 +268,7 @@ def _load_processor(
                 f"{name} does not expose both image_processor and tokenizer. "
                 "Falling back to AutoImageProcessor + AutoTokenizer."
             )
-        except Exception as exc:
+        except (OSError, ValueError, EnvironmentError) as exc:
             logger.warning(
                 "AutoProcessor loading failed for "
                 f"{name}: {type(exc).__name__}: {exc}. "
@@ -289,7 +288,7 @@ def _load_processor(
                 use_fast=False,
             )
             return _ProcessorBundle(image_processor=image_processor, tokenizer=tokenizer)
-        except Exception as exc:
+        except (OSError, ValueError, EnvironmentError) as exc:
             logger.warning(
                 "AutoImageProcessor/AutoTokenizer loading failed for "
                 f"{name}: {type(exc).__name__}: {exc}."
@@ -324,7 +323,7 @@ def _load_model(
             weights_only=False,
             cache_dir=cache_dir,
         )
-    except Exception as exc:
+    except (OSError, ValueError, EnvironmentError) as exc:
         logger.warning(
             "AutoModelForImageTextToText loading failed for "
             f"{model_name}: {type(exc).__name__}: {exc}. "
@@ -499,7 +498,8 @@ def extract_text_embeddings(
         for idx in results:
             results[idx].append(_pool(hs[idx], pooling, mask))
 
-    assert results is not None, "No texts to process"
+    if results is None:
+        raise RuntimeError("No texts to process")
     return {idx: np.concatenate(v) for idx, v in results.items()}
 
 
@@ -530,6 +530,74 @@ _DTYPES: dict[str, torch.dtype] = {
     "bfloat16": torch.bfloat16,
     "float32": torch.float32,
 }
+
+
+# ---------------------------------------------------------------------------
+# Stimulus loading helper
+# ---------------------------------------------------------------------------
+
+
+def _load_stimuli(
+    cfg: DictConfig,
+    metadata_path: Path,
+    image_filename_col: str,
+    coco_id_col: str,
+) -> tuple[list[str], np.ndarray, list[Image.Image], np.ndarray]:
+    """Load texts, COCO IDs, unique images, and a broadcast index from config.
+
+    Returns
+    -------
+    texts : list[str]
+    coco_ids : (n,) array of COCO IDs
+    unique_images : list of deduplicated PIL images
+    broadcast : (n,) index mapping each row to its entry in unique_images
+    """
+    dataset_name = cfg.get("dataset_hf_identifier", None)
+    if dataset_name:
+        dataset_split = cfg.get("dataset_split", "train")
+        dataset_cache_dir = cfg.get("dataset_cache_dir", None)
+        logger.info(
+            f"Loading metadata from dataset {dataset_name} (split={dataset_split})"
+        )
+        from datasets import load_dataset as _load_dataset
+        dataset = _load_dataset(dataset_name, split=dataset_split, cache_dir=dataset_cache_dir)
+        df = dataset.to_pandas()
+        missing_cols = [
+            c for c in (cfg.text_column, image_filename_col, coco_id_col) if c not in df.columns
+        ]
+        if missing_cols:
+            raise KeyError(f"Missing columns in dataset: {missing_cols}")
+        if cfg.get("drop_empty_text", True):
+            df[cfg.text_column] = df[cfg.text_column].astype(str)
+            df = df[df[cfg.text_column].str.strip() != ""].reset_index(drop=True)
+    else:
+        logger.info(f"Loading metadata from {metadata_path}")
+        usecols = [cfg.text_column, image_filename_col, coco_id_col]
+        df = pd.read_csv(metadata_path, usecols=usecols)
+
+    texts: list[str] = df[cfg.text_column].tolist()
+    coco_ids: np.ndarray = df[coco_id_col].values  # type: ignore[assignment]
+
+    image_dir = Path(cfg.image_dir)
+    if not image_dir.is_absolute():
+        image_dir = PROJ_ROOT / image_dir
+    logger.info(f"Loading images from {image_dir} (filename column: {image_filename_col!r})")
+
+    filenames: list[str] = df[image_filename_col].tolist()
+    seen: dict[str, int] = {}
+    unique_images: list[Image.Image] = []
+    for fname in tqdm(filenames, desc="Loading images"):
+        if fname not in seen:
+            img_path = image_dir / fname
+            img = Image.open(img_path).convert("RGB")
+            seen[fname] = len(unique_images)
+            unique_images.append(img)
+
+    broadcast = np.array([seen[f] for f in filenames])
+    logger.info(
+        f"  {len(df)} rows  ·  {len(unique_images)} unique images  ·  {len(texts)} texts"
+    )
+    return texts, coco_ids, unique_images, broadcast
 
 
 # ---------------------------------------------------------------------------
@@ -596,62 +664,11 @@ def main(cfg: DictConfig) -> None:
         list(cfg.text_layers) if cfg.get("text_layers") is not None else None
     )
 
-    # -- load metadata ------------------------------------------------------
+    # -- load metadata + images ---------------------------------------------
     image_filename_col: str = cfg.get("image_filename_column", "filepath")
     coco_id_col: str = cfg.get("coco_id_column", "cocoid_x")
-    dataset_name = cfg.get("dataset_hf_identifier", None)
-    if dataset_name:
-        dataset_split = cfg.get("dataset_split", "train")
-        dataset_cache_dir = cfg.get("dataset_cache_dir", None)
-        logger.info(
-            f"Loading metadata from dataset {dataset_name} (split={dataset_split})"
-        )
-        dataset = load_dataset(
-            dataset_name,
-            split=dataset_split,
-            cache_dir=dataset_cache_dir,
-        )
-        df = dataset.to_pandas()
-        missing_cols = [
-            c for c in (cfg.text_column, image_filename_col, coco_id_col) if c not in df.columns
-        ]
-        if missing_cols:
-            raise KeyError(
-                f"Missing columns in dataset: {missing_cols}"
-            )
-        if cfg.get("drop_empty_text", True):
-            df[cfg.text_column] = df[cfg.text_column].astype(str)
-            df = df[df[cfg.text_column].str.strip() != ""].reset_index(drop=True)
-    else:
-        logger.info(f"Loading metadata from {metadata_path}")
-        usecols = [cfg.text_column, image_filename_col, coco_id_col]
-        df = pd.read_csv(metadata_path, usecols=usecols)
-    texts: list[str] = df[cfg.text_column].tolist()
-    coco_ids: np.ndarray = df[coco_id_col].values  # type: ignore[assignment]
-
-    # -- load images from the COCO image directory -------------------------
-    image_dir = Path(cfg.image_dir)
-    if not image_dir.is_absolute():
-        image_dir = PROJ_ROOT / image_dir
-    logger.info(f"Loading images from {image_dir} (filename column: {image_filename_col!r})")
-
-    filenames: list[str] = df[image_filename_col].tolist()
-
-    # Deduplicate images so each unique image is processed only once
-    seen: dict[str, int] = {}
-    unique_images: list[Image.Image] = []
-    for fname in tqdm(filenames, desc="Loading images"):
-        if fname not in seen:
-            img_path = image_dir / fname
-            img = Image.open(img_path).convert("RGB")
-            seen[fname] = len(unique_images)
-            unique_images.append(img)
-
-    broadcast = np.array([seen[f] for f in filenames])
-
-    logger.info(
-        f"  {len(df)} rows  ·  {len(unique_images)} unique images  ·  "
-        f"{len(texts)} texts"
+    texts, coco_ids, unique_images, broadcast = _load_stimuli(
+        cfg, metadata_path, image_filename_col, coco_id_col
     )
 
     # -- iterate over models ------------------------------------------------

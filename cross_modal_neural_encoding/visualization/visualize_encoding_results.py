@@ -1047,7 +1047,7 @@ def main(cfg: DictConfig) -> None:
             agg_path = child / "aggregated.csv"
             try:
                 agg_df = load_aggregated(agg_path)
-            except Exception as exc:
+            except (OSError, pd.errors.ParserError) as exc:
                 logger.warning(
                     f"Skipping {child.name}: failed to load aggregated.csv ({exc})"
                 )

@@ -572,3 +572,10 @@ def load_brain_mask(fmriprep_dir: Path, subject: str) -> np.ndarray:
         f"out of {len(mask_1d)} total"
     )
     return mask_1d
+
+
+def get_graph_metric(graph_dict: object, key: str) -> int | float:
+    """Extract a scalar metric from a graph dictionary, returning 0 for missing/invalid entries."""
+    if not isinstance(graph_dict, dict):
+        return 0
+    return graph_dict.get(key, 0)

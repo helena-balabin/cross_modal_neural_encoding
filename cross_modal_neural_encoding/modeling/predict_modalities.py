@@ -269,6 +269,98 @@ class SkipMLP(nn.Module):
         return self.out(h4)
 
 
+def _train_mlp_fold(
+    X_train: np.ndarray,
+    Y_train: np.ndarray,
+    X_test: np.ndarray,
+    mlp_config: dict,
+    random_state: int,
+) -> np.ndarray:
+    """Train a SkipMLP on one CV fold and return predictions on X_test."""
+    val_ratio = float(mlp_config.get("val_ratio", 0.1))
+    # Clamp to [0.05, 0.3]: too small gives noisy early-stopping signal,
+    # too large wastes training data on small folds.
+    val_ratio = min(max(val_ratio, 0.05), 0.3)
+    rng = np.random.default_rng(random_state)
+    idx = np.arange(len(X_train))
+    rng.shuffle(idx)
+    split = int(len(idx) * (1.0 - val_ratio))
+    train_idx, val_idx = idx[:split], idx[split:]
+
+    X_tr = torch.tensor(X_train[train_idx], dtype=torch.float32)
+    Y_tr = torch.tensor(Y_train[train_idx], dtype=torch.float32)
+    X_val = torch.tensor(X_train[val_idx], dtype=torch.float32)
+    Y_val = torch.tensor(Y_train[val_idx], dtype=torch.float32)
+
+    device = str(mlp_config.get("device", "cuda")).lower()
+    if device == "cuda" and not torch.cuda.is_available():
+        device = "cpu"
+    device_t = torch.device(device)
+
+    model = SkipMLP(
+        X_train.shape[1],
+        Y_train.shape[1],
+        hidden_size=int(mlp_config.get("hidden_size", 256)),
+        bias=bool(mlp_config.get("bias", True)),
+        use_relu=mlp_config.get("use_relu", False),
+    ).to(device_t)
+
+    lr = float(mlp_config.get("learning_rate", 1e-3))
+    weight_decay = float(mlp_config.get("weight_decay", 0.0))
+    batch_size = int(mlp_config.get("batch_size", 128))
+    max_epochs = int(mlp_config.get("max_epochs", 256))
+    patience = int(mlp_config.get("patience", 8))
+    log_interval = int(mlp_config.get("log_interval", 25))
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    loss_fn = nn.MSELoss()
+
+    best_val = float("inf")
+    best_state: dict[str, torch.Tensor] | None = None
+    epochs_no_improve = 0
+
+    model.train()
+    for _ in range(max_epochs):
+        epoch = _ + 1
+        perm = torch.randperm(X_tr.size(0))
+        for start in range(0, X_tr.size(0), batch_size):
+            idx_batch = perm[start : start + batch_size]
+            xb = X_tr[idx_batch].to(device_t)
+            yb = Y_tr[idx_batch].to(device_t)
+            optimizer.zero_grad(set_to_none=True)
+            preds = model(xb)
+            loss = loss_fn(preds, yb)
+            loss.backward()
+            optimizer.step()
+
+        model.eval()
+        with torch.no_grad():
+            val_pred = model(X_val.to(device_t))
+            val_loss = loss_fn(val_pred, Y_val.to(device_t)).item()
+        model.train()
+
+        if log_interval > 0 and (epoch == 1 or epoch % log_interval == 0):
+            logger.info(f"    Epoch {epoch}/{max_epochs} val_loss={val_loss:.6f}")
+
+        if val_loss < best_val - 1e-6:
+            best_val = val_loss
+            best_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+            if epochs_no_improve >= patience:
+                logger.info(f"    Early stop at epoch {epoch} (best val_loss={best_val:.6f})")
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
+    model.eval()
+    with torch.no_grad():
+        X_test_t = torch.tensor(X_test, dtype=torch.float32).to(device_t)
+        return model(X_test_t).cpu().numpy()
+
+
 def _evaluate_cv(
     X: np.ndarray,
     Y: np.ndarray,
@@ -319,92 +411,9 @@ def _evaluate_cv(
                     "consider standardize=true."
                 )
 
-            val_ratio = float(mlp_config.get("val_ratio", 0.1))
-            val_ratio = min(max(val_ratio, 0.05), 0.3)
-            rng = np.random.default_rng(random_state)
-            idx = np.arange(len(X_train))
-            rng.shuffle(idx)
-            split = int(len(idx) * (1.0 - val_ratio))
-            train_idx, val_idx = idx[:split], idx[split:]
-
-            X_tr = torch.tensor(X_train[train_idx], dtype=torch.float32)
-            Y_tr = torch.tensor(Y_train[train_idx], dtype=torch.float32)
-            X_val = torch.tensor(X_train[val_idx], dtype=torch.float32)
-            Y_val = torch.tensor(Y_train[val_idx], dtype=torch.float32)
-
-            device = str(mlp_config.get("device", "cuda")).lower()
-            if device == "cuda" and not torch.cuda.is_available():
-                device = "cpu"
-            device_t = torch.device(device)
-
-            model = SkipMLP(
-                X_train.shape[1],
-                Y_train.shape[1],
-                hidden_size=int(mlp_config.get("hidden_size", 256)),
-                bias=bool(mlp_config.get("bias", True)),
-                use_relu=regressor == "mlp_relu",
-            ).to(device_t)
-
-            lr = float(mlp_config.get("learning_rate", 1e-3))
-            weight_decay = float(mlp_config.get("weight_decay", 0.0))
-            batch_size = int(mlp_config.get("batch_size", 128))
-            max_epochs = int(mlp_config.get("max_epochs", 256))
-            patience = int(mlp_config.get("patience", 8))
-            log_interval = int(mlp_config.get("log_interval", 25))
-
-            optimizer = torch.optim.Adam(
-                model.parameters(), lr=lr, weight_decay=weight_decay
-            )
-            loss_fn = nn.MSELoss()
-
-            best_val = float("inf")
-            best_state: dict[str, torch.Tensor] | None = None
-            epochs_no_improve = 0
-
-            model.train()
-            for _ in range(max_epochs):
-                epoch = _ + 1
-                perm = torch.randperm(X_tr.size(0))
-                for start in range(0, X_tr.size(0), batch_size):
-                    idx_batch = perm[start : start + batch_size]
-                    xb = X_tr[idx_batch].to(device_t)
-                    yb = Y_tr[idx_batch].to(device_t)
-                    optimizer.zero_grad(set_to_none=True)
-                    preds = model(xb)
-                    loss = loss_fn(preds, yb)
-                    loss.backward()
-                    optimizer.step()
-
-                model.eval()
-                with torch.no_grad():
-                    val_pred = model(X_val.to(device_t))
-                    val_loss = loss_fn(val_pred, Y_val.to(device_t)).item()
-                model.train()
-
-                if log_interval > 0 and (epoch == 1 or epoch % log_interval == 0):
-                    logger.info(
-                        f"    Epoch {epoch}/{max_epochs} val_loss={val_loss:.6f}"
-                    )
-
-                if val_loss < best_val - 1e-6:
-                    best_val = val_loss
-                    best_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
-                    epochs_no_improve = 0
-                else:
-                    epochs_no_improve += 1
-                    if epochs_no_improve >= patience:
-                        logger.info(
-                            f"    Early stop at epoch {epoch} (best val_loss={best_val:.6f})"
-                        )
-                        break
-
-            if best_state is not None:
-                model.load_state_dict(best_state)
-
-            model.eval()
-            with torch.no_grad():
-                X_test_t = torch.tensor(X_test, dtype=torch.float32).to(device_t)
-                Y_pred = model(X_test_t).cpu().numpy()
+            mlp_cfg = dict(mlp_config)
+            mlp_cfg.setdefault("use_relu", regressor == "mlp_relu")
+            Y_pred = _train_mlp_fold(X_train, Y_train, X_test, mlp_cfg, random_state)
 
             if standardize:
                 Y_pred = y_scaler.inverse_transform(Y_pred)

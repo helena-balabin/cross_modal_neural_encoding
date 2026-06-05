@@ -72,7 +72,10 @@ class VGCOCODataset(Dataset):
         try:
             image = Image.open(img_path).convert("RGB")
         except OSError as e:
-            warnings.warn(f"Could not read {img_path}, substituting blank image: {e}")
+            coco_id = row.get("coco_id", row.get("cocoid", idx))
+            warnings.warn(
+                f"Could not read {img_path} (coco_id={coco_id}), substituting blank image: {e}"
+            )
             image = Image.new("RGB", (224, 224), color=0)
 
         # Get text

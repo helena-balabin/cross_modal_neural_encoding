@@ -71,7 +71,7 @@ def load_structural_probing_results(
             df = pd.read_csv(csv_file)
             results[model_name] = df
             logger.info(f"Loaded results for model {model_name} from {csv_file}")
-        except Exception as e:
+        except (OSError, pd.errors.ParserError) as e:
             logger.warning(f"Failed to load {csv_file}: {e}")
             continue
 
@@ -82,7 +82,7 @@ def load_structural_probing_results(
                 logger.info(
                     f"Loaded fold scores for model {model_name} from {fold_file}"
                 )
-            except Exception as e:
+            except (OSError, pd.errors.ParserError) as e:
                 logger.warning(f"Failed to load {fold_file}: {e}")
 
     if not results:

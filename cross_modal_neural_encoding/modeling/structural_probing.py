@@ -26,6 +26,7 @@ from omegaconf import DictConfig
 from typing import cast
 from PIL import Image
 
+from cross_modal_neural_encoding.utils import get_graph_metric
 from .extract_embeddings import (
     _DTYPES,
     _get_language_model,
@@ -65,7 +66,7 @@ def _auto_select_layer_from_model(
     if modality == "vision":
         try:
             layers = _get_vision_layers(model)
-        except Exception as exc:
+        except AttributeError as exc:
             logger.warning(
                 f"Failed to inspect vision layers for auto selection: {exc}"
             )
@@ -74,7 +75,7 @@ def _auto_select_layer_from_model(
     if modality == "text":
         try:
             lm = _get_language_model(model)
-        except Exception as exc:
+        except AttributeError as exc:
             logger.warning(
                 f"Failed to inspect text layers for auto selection: {exc}"
             )
@@ -148,12 +149,6 @@ def load_graph_dataset(
     return df
 
 
-def _get_graph_metric(graph_dict: object, key: str) -> int | float:
-    if not isinstance(graph_dict, dict):
-        return 0
-    return graph_dict.get(key, 0)
-
-
 def _extract_graph_labels(
     df: pd.DataFrame,
     graph_col: str,
@@ -161,15 +156,15 @@ def _extract_graph_labels(
 ) -> np.ndarray:
     if target == "num_nodes":
         return np.asarray(
-            df[graph_col].apply(lambda g: _get_graph_metric(g, "num_nodes")).values
+            df[graph_col].apply(lambda g: get_graph_metric(g, "num_nodes")).values
         )
     if target == "num_edges":
         return np.asarray(
-            df[graph_col].apply(lambda g: _get_graph_metric(g, "num_edges")).values
+            df[graph_col].apply(lambda g: get_graph_metric(g, "num_edges")).values
         )
     if target == "depth":
         return np.asarray(
-            df[graph_col].apply(lambda g: _get_graph_metric(g, "depth")).values
+            df[graph_col].apply(lambda g: get_graph_metric(g, "depth")).values
         )
     raise ValueError(f"Unknown target: {target}")
 
@@ -262,7 +257,6 @@ def run_graph_probing(
                 logger.info(f"{key}: R² = {results[key]:.4f}")
 
     return results, fold_scores
-    raise ValueError(f"Unknown target: {target}")
 
 
 

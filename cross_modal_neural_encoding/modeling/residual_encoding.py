@@ -54,6 +54,7 @@ from cross_modal_neural_encoding.modeling.neural_encoding import (
 from cross_modal_neural_encoding.utils import (
     normalize_betas_per_run,
     compute_nc_by_modality,
+    get_graph_metric,
     load_design_matrix_mapping,
     load_brain_mask,
     load_brain_mask_img,
@@ -86,32 +87,27 @@ def load_structural_targets(
 
     coco_ids = np.array([int(cid) for cid in dataset[coco_id_column]])
 
-    def _get_graph_metric(graph_dict: object, key: str) -> int | float:
-        if not isinstance(graph_dict, dict):
-            return 0
-        return graph_dict.get(key, 0)
-
     text_graphs = dataset[text_graph_column]
     vision_graphs = dataset[vision_graph_column]
 
     targets = {
         "amr_n_nodes": np.array([
-            _get_graph_metric(g, "num_nodes") for g in text_graphs
+            get_graph_metric(g, "num_nodes") for g in text_graphs
         ]),
         "amr_n_edges": np.array([
-            _get_graph_metric(g, "num_edges") for g in text_graphs
+            get_graph_metric(g, "num_edges") for g in text_graphs
         ]),
         "amr_graph_depth": np.array([
-            _get_graph_metric(g, "depth") for g in text_graphs
+            get_graph_metric(g, "depth") for g in text_graphs
         ]),
         "coco_a_nodes": np.array([
-            _get_graph_metric(g, "num_nodes") for g in vision_graphs
+            get_graph_metric(g, "num_nodes") for g in vision_graphs
         ]),
         "coco_a_edges": np.array([
-            _get_graph_metric(g, "num_edges") for g in vision_graphs
+            get_graph_metric(g, "num_edges") for g in vision_graphs
         ]),
         "coco_a_graph_depth": np.array([
-            _get_graph_metric(g, "depth") for g in vision_graphs
+            get_graph_metric(g, "depth") for g in vision_graphs
         ]),
     }
 

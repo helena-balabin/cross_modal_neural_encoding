@@ -13,7 +13,6 @@ Usage::
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import hydra
 import nibabel as nib
@@ -65,7 +64,7 @@ def load_glmsingle_betas(
         try:
             designinfo = np.load(designinfo_file, allow_pickle=True).item()
             stimulus_ids = np.array(designinfo.get("stimorder", stimulus_ids), dtype=int)
-        except Exception:
+        except (OSError, ValueError):
             pass
 
     return betas, stimulus_ids, spatial_dims
@@ -227,7 +226,7 @@ def plot_surface_modality_overlay(
     percentiles: list[int],
     subject: str,
     native_surfaces: dict,
-    output_path: Optional[Path] = None,
+    output_path: Path | None = None,
 ):
     """
     Plot text and image noise ceiling on a single figure with multiple subplots.
@@ -249,7 +248,7 @@ def plot_surface_modality_overlay(
         Subject identifier for title
     native_surfaces : dict
         Dictionary of native surface file paths from load_native_surfaces()
-    output_path : Optional[Path]
+    output_path : Path | None
         Path to save figure
     """
     import matplotlib.pyplot as plt
