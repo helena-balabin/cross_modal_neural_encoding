@@ -8,7 +8,9 @@ nav:
   - Feature Extraction: 03_feature_extraction.md
   - Neural Encoding: 04_neural_encoding.md
   - Structural Analysis: 05_structural_analysis.md
-  - Residual Neural Encoding: residual_encoding.md
-  - Evaluation & Statistics: 05_evaluation_and_statistics.md
-  - Visualization: 06_visualization.md
-  - Configuration: 07_configuration.md
+  - Residual Neural Encoding: 06_residual_encoding.md
+  - Models: 07_models.md
+  - Evaluation & Statistics: 08_evaluation_and_statistics.md
+  - Configuration: 09_configuration.md
+  - Visualization: 10_visualization.md
+  - Predict Modalities: 11_predict_modalities.md

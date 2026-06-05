@@ -1,61 +1,69 @@
 # Cross-Modal Neural Encoding
 
-<a target="_blank" href="https://cookiecutter-data-science.drivendata.org/">
-    <img src="https://img.shields.io/badge/CCDS-Project%20template-328F97?logo=cookiecutter" />
-</a>
+[![CCDS Project template](https://img.shields.io/badge/CCDS-Project%20template-328F97?logo=cookiecutter)](https://cookiecutter-data-science.drivendata.org/)
 
-Cross-Modal Neural Encoding Project.
+Investigates whether Vision-Language Model (VLM) representations exhibit **cross-modal neural alignment**: whether embeddings from one sensory modality (images or text) can predict fMRI brain responses to stimuli presented in the other modality.
 
-## Project Organization
+Full documentation: `docs/` (built with mkdocs).
+
+## Project Organisation
+
+```text
+├── configs/                    <- Hydra YAML configuration files
+│   ├── modeling/               <- extract_embeddings, neural_encoding, predict_modalities,
+│   │                              residual_encoding, structural_probing
+│   └── visualization/          <- matching visualisation configs
+│
+├── cross_modal_neural_encoding/
+│   ├── config.py               <- Path constants (PROJ_ROOT, DATA_DIR, etc.)
+│   ├── utils.py                <- Shared utilities (noise ceiling, beta loading, etc.)
+│   ├── modeling/
+│   │   ├── datasets.py         <- PyTorch Dataset for VG-COCO stimuli
+│   │   ├── extract_embeddings.py   <- VLM hidden-state extraction via hooks
+│   │   ├── neural_encoding.py      <- Ridge regression encoding model
+│   │   ├── predict_modalities.py   <- Cross-modal embedding prediction (MLP / ridge)
+│   │   ├── residual_encoding.py    <- Structure-targeted residual ablation
+│   │   └── structural_probing.py   <- Graph-based structural probing
+│   └── visualization/
+│       ├── visualize_encoding_results.py
+│       ├── visualize_noise_ceiling.py
+│       ├── visualize_predict_modalities.py
+│       ├── visualize_residual_encoding.py
+│       └── visualize_structural_probing.py
+│
+├── data/
+│   ├── coco_metadata/          <- COCO stimulus metadata CSV
+│   ├── external/               <- Third-party data
+│   ├── interim/                <- Intermediate outputs
+│   ├── processed/              <- Final analysis-ready data
+│   └── raw/                    <- Original immutable data
+│
+├── docs/                       <- mkdocs documentation
+├── models/                     <- Saved model checkpoints
+├── outputs/                    <- Pipeline results (per-analysis subdirs)
+├── reports/figures/            <- Generated figures
+├── scripts/                    <- SLURM job submission scripts
+│
+├── pyproject.toml              <- Package metadata and tool configuration (ruff)
+└── uv.lock                     <- Locked dependency versions
+```
+
+## Pipeline
 
 ```
-├── LICENSE            <- Open-source license if one is chosen
-├── Makefile           <- Makefile with convenience commands like `make data` or `make train`
-├── README.md          <- The top-level README for developers using this project.
-├── data
-│   ├── external       <- Data from third party sources.
-│   ├── interim        <- Intermediate data that has been transformed.
-│   ├── processed      <- The final, canonical data sets for modeling.
-│   └── raw            <- The original, immutable data dump.
-│
-├── docs               <- A default mkdocs project; see www.mkdocs.org for details
-│
-├── models             <- Trained and serialized models, model predictions, or model summaries
-│
-├── notebooks          <- Jupyter notebooks. Naming convention is a number (for ordering),
-│                         the creator's initials, and a short `-` delimited description, e.g.
-│                         `1.0-jqp-initial-data-exploration`.
-│
-├── pyproject.toml     <- Project configuration file with package metadata for 
-│                         cross_modal_neural_encoding and configuration for tools like black
-│
-├── references         <- Data dictionaries, manuals, and all other explanatory materials.
-│
-├── reports            <- Generated analysis as HTML, PDF, LaTeX, etc.
-│   └── figures        <- Generated graphics and figures to be used in reporting
-│
-├── requirements.txt   <- The requirements file for reproducing the analysis environment, e.g.
-│                         generated with `pip freeze > requirements.txt`
-│
-├── setup.cfg          <- Configuration file for flake8
-│
-└── cross_modal_neural_encoding   <- Source code for use in this project.
-    │
-    ├── __init__.py             <- Makes cross_modal_neural_encoding a Python module
-    │
-    ├── config.py               <- Store useful variables and configuration
-    │
-    ├── dataset.py              <- Scripts to download or generate data
-    │
-    ├── features.py             <- Code to create features for modeling
-    │
-    ├── modeling                
-    │   ├── __init__.py 
-    │   ├── predict.py          <- Code to run model inference with trained models          
-    │   └── train.py            <- Code to train models
-    │
-    └── plots.py                <- Code to create visualizations
+1. Extract VLM embeddings      →  cross_modal_neural_encoding/modeling/extract_embeddings.py
+2. Run neural encoding          →  cross_modal_neural_encoding/modeling/neural_encoding.py
+3. Predict modalities           →  cross_modal_neural_encoding/modeling/predict_modalities.py
+4. Visualise results            →  cross_modal_neural_encoding/visualization/
+```
+
+Each step is configured via its corresponding YAML file in `configs/` and submitted to the cluster via `scripts/`.
+
+## Setup
+
+```bash
+uv sync
+source .venv/bin/activate
 ```
 
 --------
-

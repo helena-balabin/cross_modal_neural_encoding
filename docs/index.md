@@ -16,9 +16,9 @@ fMRI responses are measured while human participants process COCO images and the
 | [Datasets](02_datasets.md) | fMRI acquisition, stimuli, BIDS structure |
 | [Feature Extraction](03_feature_extraction.md) | VLM architecture, embedding extraction, pooling |
 | [Neural Encoding](04_neural_encoding.md) | Ridge regression, cross-validation, permutation tests |
-| [Evaluation & Statistics](05_evaluation_and_statistics.md) | Noise ceiling, metrics, significance testing |
-| [Visualization](06_visualization.md) | Surface projection, result figures |
-| [Configuration](07_configuration.md) | Hydra parameters, reproducibility |
+| [Evaluation & Statistics](08_evaluation_and_statistics.md) | Noise ceiling, metrics, significance testing |
+| [Configuration](09_configuration.md) | Hydra parameters, reproducibility |
+| [Visualization](10_visualization.md) | Surface projection, result figures |
 | [Predict Modalities](11_predict_modalities.md) | Cross-modal embedding prediction and heatmaps |
 
 ---
@@ -32,7 +32,7 @@ fMRI responses are measured while human participants process COCO images and the
 4. Visualize encoding results   → visualize_encoding_results.py
 ```
 
-All steps are configured via YAML files under `configs/` and launched through the `Makefile`.
+All steps are configured via YAML files under `configs/`.
 
 ---
 
