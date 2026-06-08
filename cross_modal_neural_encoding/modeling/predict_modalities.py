@@ -877,6 +877,7 @@ def main(cfg: DictConfig) -> None:
         raise RuntimeError("No results produced. Check embeddings and config.")
 
     results_df = pd.DataFrame.from_records(records)
+    output_dir.mkdir(parents=True, exist_ok=True)
     results_path = output_dir / "predict_modalities_results.csv"
     results_df.to_csv(results_path, index=False)
     logger.success(f"Saved results to {results_path}")
