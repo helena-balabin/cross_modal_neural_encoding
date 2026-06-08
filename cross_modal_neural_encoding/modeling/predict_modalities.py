@@ -283,15 +283,17 @@ def _train_mlp_fold(
     split = int(len(idx) * (1.0 - val_ratio))
     train_idx, val_idx = idx[:split], idx[split:]
 
-    X_tr = torch.tensor(X_train[train_idx], dtype=torch.float32)
-    Y_tr = torch.tensor(Y_train[train_idx], dtype=torch.float32)
-    X_val = torch.tensor(X_train[val_idx], dtype=torch.float32)
-    Y_val = torch.tensor(Y_train[val_idx], dtype=torch.float32)
-
     device = str(mlp_config.get("device", "cuda")).lower()
     if device == "cuda" and not torch.cuda.is_available():
         device = "cpu"
     device_t = torch.device(device)
+
+    # Keep all fold data resident on the GPU. With 37k-sample folds the old
+    # per-batch host->device copy dominated runtime.
+    X_tr = torch.tensor(X_train[train_idx], dtype=torch.float32, device=device_t)
+    Y_tr = torch.tensor(Y_train[train_idx], dtype=torch.float32, device=device_t)
+    X_val = torch.tensor(X_train[val_idx], dtype=torch.float32, device=device_t)
+    Y_val = torch.tensor(Y_train[val_idx], dtype=torch.float32, device=device_t)
 
     model = SkipMLP(
         X_train.shape[1],
@@ -318,11 +320,11 @@ def _train_mlp_fold(
     model.train()
     for _ in range(max_epochs):
         epoch = _ + 1
-        perm = torch.randperm(X_tr.size(0))
+        perm = torch.randperm(X_tr.size(0), device=device_t)
         for start in range(0, X_tr.size(0), batch_size):
             idx_batch = perm[start : start + batch_size]
-            xb = X_tr[idx_batch].to(device_t)
-            yb = Y_tr[idx_batch].to(device_t)
+            xb = X_tr[idx_batch]
+            yb = Y_tr[idx_batch]
             optimizer.zero_grad(set_to_none=True)
             preds = model(xb)
             loss = loss_fn(preds, yb)
@@ -331,8 +333,8 @@ def _train_mlp_fold(
 
         model.eval()
         with torch.no_grad():
-            val_pred = model(X_val.to(device_t))
-            val_loss = loss_fn(val_pred, Y_val.to(device_t)).item()
+            val_pred = model(X_val)
+            val_loss = loss_fn(val_pred, Y_val).item()
         model.train()
 
         if log_interval > 0 and (epoch == 1 or epoch % log_interval == 0):
@@ -651,6 +653,11 @@ def _resolve_model_list(
     config_name="predict_modalities",
 )
 def main(cfg: DictConfig) -> None:
+    # TF32 is a free matmul speedup on Ada/Ampere GPUs with no meaningful
+    # precision loss for this regression task.
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+
     embeddings_dir = Path(cfg.embeddings_dir)
     output_dir = Path(cfg.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -786,6 +793,19 @@ def main(cfg: DictConfig) -> None:
     min_samples = int(cfg.get("min_samples", n_splits))
     mlp_config = dict(cfg.get("mlp", {}))
 
+    # Optional pair sharding for SLURM-array parallelism. Each shard processes a
+    # round-robin slice of the (text x vision) pairs and writes its own CSV; a
+    # separate merge step concatenates them. num_shards=1 -> original behavior.
+    num_shards = int(cfg.get("num_shards", 1))
+    shard_index = int(cfg.get("shard_index", 0))
+    if num_shards > 1:
+        results_path = output_dir / (
+            f"predict_modalities_results_shard{shard_index:02d}_of_{num_shards:02d}.csv"
+        )
+        logger.info(f"Sharding: shard {shard_index}/{num_shards} -> {results_path.name}")
+    else:
+        results_path = output_dir / "predict_modalities_results.csv"
+
     logger.info(f"Regressor: {regressor} | standardize={standardize}")
 
     records: list[dict] = []
@@ -795,6 +815,8 @@ def main(cfg: DictConfig) -> None:
     for text_label, text_bundle in text_cache.items():
         for vision_label, vision_bundle in vision_cache.items():
             pair_idx += 1
+            if num_shards > 1 and (pair_idx - 1) % num_shards != shard_index:
+                continue
             logger.info(f"[{pair_idx}/{total_pairs}] {text_label} ↔ {vision_label}")
             common_ids = np.intersect1d(text_bundle.coco_ids, vision_bundle.coco_ids)
             if common_ids.size < min_samples:
@@ -873,13 +895,13 @@ def main(cfg: DictConfig) -> None:
                 record[f"fold_{i}"] = score
             records.append(record)
 
+            # Incremental write so a preempted/killed run keeps its progress.
+            pd.DataFrame.from_records(records).to_csv(results_path, index=False)
+
     if not records:
         raise RuntimeError("No results produced. Check embeddings and config.")
 
-    results_df = pd.DataFrame.from_records(records)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    results_path = output_dir / "predict_modalities_results.csv"
-    results_df.to_csv(results_path, index=False)
+    pd.DataFrame.from_records(records).to_csv(results_path, index=False)
     logger.success(f"Saved results to {results_path}")
 
 

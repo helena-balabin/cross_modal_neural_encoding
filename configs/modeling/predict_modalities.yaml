@@ -51,6 +51,13 @@ random_state: 42
 standardize: true
 min_samples: 5
 
+# ── Sharding (SLURM-array parallelism) ───────────────────────
+# Split the (text x vision) pairs round-robin across array tasks; each shard
+# writes its own CSV (merge with scripts/merge_shard_results.py).
+# num_shards=1 disables sharding (single full run).
+num_shards: 1
+shard_index: 0
+
 # ── MLP settings (skip-connected, 4-layer MLP) ───────────────
 mlp:
   hidden_size: 256
