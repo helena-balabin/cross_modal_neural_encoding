@@ -32,9 +32,13 @@ p_value_col: "p_value_mean_r"
 alpha: 0.05
 
 # ── Group-level significance for aggregate bars ───────────────
-# If true, stars on the group bars are computed from subject-level
-# metric values via one-sample sign-flip permutation test (H1: mean > 0),
-# instead of using averaged per-subject p-values from aggregated.csv.
+# If true, stars on the group bars are computed by combining the saved
+# subject-level permutation null distributions (null_mean_r.npy): one
+# value is drawn per subject and averaged, repeated group_sig_permutations
+# times, to build a group-level null for the mean encoding score
+# (Stelzer et al., 2013). Falls back to the one-sample sign-flip test
+# when no per-subject null files are available. Significance is assessed
+# on the raw mean_r even when a normalized metric is displayed.
 use_group_level_significance: true
 group_sig_permutations: 10000
 group_sig_random_state: 42
@@ -50,7 +54,8 @@ plot_per_model_rows: false
 # Grouped model-comparison plot (one panel)
 plot_grouped_models: true
 grouped_output_path: null
-grouped_figsize: [10, 3]
+# Width auto-expands with the number of models; this is the minimum.
+grouped_figsize: [12, 4.5]
 
 # Supplementary per-subject plot (mean across models)
 plot_subject_mean_across_models: true
@@ -64,7 +69,7 @@ share_y_limits: true
 show_subject_panel: true
 
 # ── Text sizing (multiplier over base plot fonts) ─────────────
-font_scale: 1.2
+font_scale: 1.4
 
 # ── Compress normalized y-axis to reduce empty middle space ───
 # Uses symlog scaling when metric contains "normalized".

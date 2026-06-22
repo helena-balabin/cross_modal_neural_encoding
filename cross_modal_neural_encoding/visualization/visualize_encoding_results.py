@@ -21,6 +21,7 @@ from typing import Any, Iterable
 import hydra
 from loguru import logger
 from matplotlib.axes import Axes
+from matplotlib.lines import Line2D
 import matplotlib.pyplot as plt
 import numpy as np
 from omegaconf import DictConfig
@@ -91,6 +92,15 @@ configure_plot_fonts()
 # ═══════════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+def _short_model_label(model_label: str) -> str:
+    """Drop the redundant ``vendor--`` / ``vendor/`` prefix for display."""
+    label = model_label
+    for sep in ("--", "/"):
+        if sep in label:
+            label = label.rsplit(sep, 1)[-1]
+    return label
 
 
 def _model_category_rank(model_label: str) -> tuple[int, str]:
@@ -204,7 +214,7 @@ def _compute_plot_ylims(
     is_normalized_metric: bool,
     compress_normalized_axis: bool,
     normalized_axis_linthresh: float,
-    force_normalized_reference: bool = True,
+    force_normalized_reference: bool = False,
 ) -> tuple[float, float]:
     """Compute shared y-limits for encoding plots."""
     stds_filled = np.where(np.isnan(stds), 0.0, stds)
@@ -229,9 +239,13 @@ def _shared_y_limits(
     metric: str,
     compress_normalized_axis: bool,
     normalized_axis_linthresh: float,
-    force_normalized_reference: bool = True,
+    force_normalized_reference: bool = False,
 ) -> tuple[float, float] | None:
-    """Compute shared y-limits across all models for the chosen metric."""
+    """Compute shared y-limits across all models for the chosen metric.
+
+    Scans both the aggregated model means (±std) and the per-subject values
+    so neither the grouped nor the per-subject figures clip any bars.
+    """
     values_list: list[np.ndarray] = []
     stds_list: list[np.ndarray] = []
     for item in model_results:
@@ -243,6 +257,12 @@ def _shared_y_limits(
             continue
         values_list.append(values)
         stds_list.append(stds)
+
+        summary_df = item.get("summary_df")
+        if summary_df is not None and metric in summary_df.columns:
+            sub_vals = np.asarray(summary_df[metric], dtype=float)
+            values_list.append(sub_vals)
+            stds_list.append(np.zeros_like(sub_vals))
 
     if not values_list:
         return None
@@ -260,28 +280,99 @@ def _shared_y_limits(
     )
 
 
-def _group_level_pvalues_from_summary(
+def combined_perm_group_pvalue(
+    model_dir: str | Path,
+    summary_df: pd.DataFrame,
+    condition: str,
+    *,
+    n_group_draws: int = 10000,
+    random_state: int = 42,
+) -> float:
+    """Group p-value combining subject-level permutation null distributions.
+
+    For each subject the encoding pipeline saved an empirical null
+    distribution of ``mean_r`` (``null_mean_r.npy``), obtained by shuffling
+    the stimulus-to-embedding mapping. The group-level null is built by
+    repeatedly drawing one value from each subject's null distribution and
+    averaging across subjects (Stelzer et al., 2013, NeuroImage). The
+    observed group statistic is the mean of the subjects' real ``mean_r``.
+
+    Significance is always assessed on the raw ``mean_r`` (the quantity the
+    permutation null was built for); the displayed metric may differ, but
+    "above chance" is a property of the raw correlation.
+
+    Returns ``nan`` when no per-subject null files are available, so the
+    caller can fall back to another test.
+    """
+    model_dir = Path(model_dir)
+    rows = summary_df[summary_df["condition"] == condition]
+    observed: list[float] = []
+    nulls: list[np.ndarray] = []
+    for _, row in rows.iterrows():
+        subject = str(row["subject"])
+        mean_r = float(row.get("mean_r", np.nan))
+        null_path = model_dir / subject / condition / "null_mean_r.npy"
+        if not np.isfinite(mean_r) or not null_path.exists():
+            continue
+        null_vals = np.asarray(np.load(null_path), dtype=float)
+        null_vals = null_vals[np.isfinite(null_vals)]
+        if null_vals.size == 0:
+            continue
+        observed.append(mean_r)
+        nulls.append(null_vals)
+
+    if not nulls:
+        return float("nan")
+
+    observed_stat = float(np.mean(observed))
+    rng = np.random.default_rng(random_state)
+    # Each group-null draw = average of one random value per subject.
+    group_null = np.zeros(n_group_draws, dtype=float)
+    for null_vals in nulls:
+        idx = rng.integers(0, null_vals.size, size=n_group_draws)
+        group_null += null_vals[idx]
+    group_null /= len(nulls)
+
+    return float((np.sum(group_null >= observed_stat) + 1) / (n_group_draws + 1))
+
+
+def _group_level_pvalues(
     summary_df: pd.DataFrame,
     *,
     conditions: list[str],
     metric: str,
+    model_dir: str | Path | None,
     n_permutations: int = 10000,
     random_state: int = 42,
 ) -> np.ndarray:
-    """Compute one p-value per condition from subject-level metric values."""
+    """One group p-value per condition.
+
+    Prefers the combined subject-level permutation test (uses the saved
+    ``null_mean_r.npy`` files). Falls back to the one-sample sign-flip test
+    on the per-subject *metric* values when no null files are available.
+    """
     pvals: list[float] = []
     for cond in conditions:
-        vals = np.asarray(
-            summary_df.loc[summary_df["condition"] == cond, metric],
-            dtype=float,
-        )
-        pvals.append(
-            signflip_pvalue_greater(
+        p = float("nan")
+        if model_dir is not None:
+            p = combined_perm_group_pvalue(
+                model_dir,
+                summary_df,
+                cond,
+                n_group_draws=n_permutations,
+                random_state=random_state,
+            )
+        if not np.isfinite(p):
+            vals = np.asarray(
+                summary_df.loc[summary_df["condition"] == cond, metric],
+                dtype=float,
+            )
+            p = signflip_pvalue_greater(
                 vals,
                 n_permutations=n_permutations,
                 random_state=random_state,
             )
-        )
+        pvals.append(p)
     return np.asarray(pvals, dtype=float)
 
 
@@ -300,6 +391,7 @@ def _plot_model_row(
     p_value_col: str,
     alpha: float,
     summary_df: pd.DataFrame | None,
+    model_dir: str | Path | None,
     show_subject_panel: bool,
     use_group_level_significance: bool,
     group_sig_permutations: int,
@@ -329,10 +421,11 @@ def _plot_model_row(
         and summary_df is not None
         and {"condition", metric}.issubset(summary_df.columns)
     ):
-        p_values = _group_level_pvalues_from_summary(
+        p_values = _group_level_pvalues(
             summary_df,
             conditions=conditions,
             metric=metric,
+            model_dir=model_dir,
             n_permutations=group_sig_permutations,
             random_state=group_sig_random_state,
         )
@@ -353,17 +446,6 @@ def _plot_model_row(
         width=0.6,
         zorder=3,
     )
-
-    # Only show the normalized reference line.
-    if is_normalized_metric:
-        ax.axhline(
-            y=1.0,
-            color="dimgray",
-            linestyle="--",
-            linewidth=1.4,
-            label="Noise-ceiling-normalized reference (1.0)",
-            zorder=2,
-        )
 
     # ── Significance annotations ──────────────────────────────────────────
     y_ref = np.nanmax(np.abs(values)) if len(values) else 1.0
@@ -424,7 +506,7 @@ def _plot_model_row(
             is_normalized_metric=is_normalized_metric,
             compress_normalized_axis=compress_normalized_axis,
             normalized_axis_linthresh=normalized_axis_linthresh,
-            force_normalized_reference=True,
+            force_normalized_reference=False,
         )
     else:
         y_min, y_max = y_limits
@@ -515,15 +597,6 @@ def _plot_model_row(
                         zorder=5,
                     )
 
-        if is_normalized_metric and y_max >= 1.0:
-            ax_subject.axhline(
-                y=1.0,
-                color="dimgray",
-                linestyle="--",
-                linewidth=1.2,
-                zorder=1,
-            )
-
         ax_subject.set_xticks(x)
         ax_subject.set_xticklabels(
             labels,
@@ -540,8 +613,13 @@ def _plot_model_row(
         ax_subject.axhline(y=0, color="black", linewidth=0.5, zorder=1)
         ax_subject.grid(axis="y", alpha=0.3, zorder=0)
         ax_subject.margins(x=0.03)
-        ncol = 2 if max(1, subject_table.shape[0]) > 6 else 1
-        ax_subject.legend(loc="upper right", fontsize=10 * font_scale, ncol=ncol)
+        ax_subject.legend(
+            loc="upper left",
+            bbox_to_anchor=(1.01, 1.0),
+            fontsize=10 * font_scale,
+            ncol=1,
+            frameon=False,
+        )
 
         if is_normalized_metric and compress_normalized_axis:
             ax_subject.set_yscale(
@@ -604,6 +682,7 @@ def plot_encoding_results(
             p_value_col=p_value_col,
             alpha=alpha,
             summary_df=item.get("summary_df"),
+            model_dir=item.get("model_dir"),
             show_subject_panel=show_subject_panel,
             use_group_level_significance=use_group_level_significance,
             group_sig_permutations=group_sig_permutations,
@@ -639,11 +718,15 @@ def plot_grouped_model_means(
     output_path: Path | None,
     figsize: tuple[float, float],
     y_limits: tuple[float, float] | None,
+    group_sig_permutations: int = 10000,
+    group_sig_random_state: int = 42,
 ) -> None:
     """Plot grouped bars comparing model means across conditions.
 
     Models are allowed to have different condition sets; missing values
-    are shown as empty slots (no bar).
+    are shown as empty slots (no bar). Significance stars come from the
+    combined subject-level permutation test (saved ``null_mean_r.npy``
+    files), falling back to the sign-flip test when nulls are unavailable.
     """
     if len(model_results) < 2:
         logger.warning("Grouped model plot requires at least two models.")
@@ -681,20 +764,30 @@ def plot_grouped_model_means(
     pvals = np.full((n_models, n_conditions), np.nan, dtype=float)
     for i, item in enumerate(model_results):
         summary_df = item.get("summary_df")
-        if summary_df is None or metric not in summary_df.columns:
+        if summary_df is None or "condition" not in summary_df.columns:
             continue
-        for j, cond in enumerate(conditions):
-            if cond not in summary_df["condition"].unique():
-                continue
-            vals = np.asarray(
-                summary_df.loc[summary_df["condition"] == cond, metric],
-                dtype=float,
-            )
-            pvals[i, j] = signflip_pvalue_greater(vals)
+        present = set(summary_df["condition"].unique())
+        model_conditions = [c for c in conditions if c in present]
+        cond_pvals = _group_level_pvalues(
+            summary_df,
+            conditions=model_conditions,
+            metric=metric,
+            model_dir=item.get("model_dir"),
+            n_permutations=group_sig_permutations,
+            random_state=group_sig_random_state,
+        )
+        for cond, p in zip(model_conditions, cond_pvals):
+            pvals[i, conditions.index(cond)] = p
 
     is_normalized_metric = "normalized" in metric.lower()
 
-    fig, ax = plt.subplots(figsize=figsize)
+    # Adaptive width so individual bars stay readable as the model count
+    # grows; never narrower than the configured width. The legend goes below
+    # in balanced columns spanning the figure width.
+    n_legend_cols = int(min(max(n_models, 1), 6))
+    base_w, base_h = figsize
+    fig_w = max(base_w, 3.0 + 0.20 * n_models * n_conditions)
+    fig, ax = plt.subplots(figsize=(fig_w, base_h))
     x = np.arange(n_conditions)
     total_width = 0.82
     bar_w = min(0.16, total_width / max(n_models, 1))
@@ -742,7 +835,7 @@ def plot_grouped_model_means(
             edgecolor="#4A4A4A",
             linewidth=0.5,
             alpha=0.9,
-            label=label,
+            label=_short_model_label(label),
             zorder=3,
         )
 
@@ -784,16 +877,6 @@ def plot_grouped_model_means(
                 zorder=5,
             )
 
-    if is_normalized_metric:
-        ax.axhline(
-            y=1.0,
-            color="dimgray",
-            linestyle="--",
-            linewidth=1.2,
-            zorder=1,
-            label="Noise-ceiling-normalized reference (1.0)",
-        )
-
     ax.set_xticks(x)
     ax.set_xticklabels(
         labels,
@@ -813,7 +896,40 @@ def plot_grouped_model_means(
     )
     ax.axhline(y=0, color="black", linewidth=0.5, zorder=1)
     ax.grid(axis="y", alpha=0.3, zorder=0)
-    ax.legend(loc="upper right", fontsize=8.5 * font_scale, ncol=3)
+    model_legend = ax.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.28),
+        fontsize=8.5 * font_scale,
+        ncol=n_legend_cols,
+        frameon=False,
+        columnspacing=1.4,
+        handletextpad=0.5,
+    )
+    ax.add_artist(model_legend)
+
+    # Second legend explaining the significance stars (vs. chance).
+    sig_entries = [
+        ("***", "p < 0.001"),
+        ("**", "p < 0.01"),
+        ("*", f"p < {alpha:g}"),
+        ("ns", "not significant"),
+    ]
+    sig_handles = [Line2D([], [], linestyle="none") for _ in sig_entries]
+    sig_labels = [f"{stars}  {desc}" for stars, desc in sig_entries]
+    sig_legend = ax.legend(
+        sig_handles,
+        sig_labels,
+        loc="upper right",
+        fontsize=8.5 * font_scale,
+        title="Significance vs. chance",
+        title_fontsize=8.5 * font_scale,
+        frameon=True,
+        framealpha=0.9,
+        handlelength=0,
+        handletextpad=0,
+        borderpad=0.6,
+        labelspacing=0.3,
+    )
     ax.margins(x=0.03)
 
     if is_normalized_metric and compress_normalized_axis:
@@ -825,13 +941,17 @@ def plot_grouped_model_means(
         )
 
     ax.set_ylim(y_min, y_max)
-    fig.tight_layout(pad=0.6)
 
     if output_path is None:
         output_path = FIGURES_DIR / "encoding_results_models_grouped.png"
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    fig.savefig(
+        output_path,
+        dpi=300,
+        bbox_inches="tight",
+        bbox_extra_artists=(model_legend, sig_legend),
+    )
     logger.success(f"Grouped-model figure saved to {output_path}")
     plt.close(fig)
 
@@ -948,16 +1068,6 @@ def plot_subject_mean_across_models(
                 zorder=5,
             )
 
-    if is_normalized_metric:
-        ax.axhline(
-            y=1.0,
-            color="dimgray",
-            linestyle="--",
-            linewidth=1.2,
-            zorder=1,
-            label="Noise-ceiling-normalized reference (1.0)",
-        )
-
     ax.set_xticks(x)
     ax.set_xticklabels(
         [CONDITION_LABELS.get(c, c) for c in conditions],
@@ -977,8 +1087,13 @@ def plot_subject_mean_across_models(
     )
     ax.axhline(y=0, color="black", linewidth=0.5, zorder=1)
     ax.grid(axis="y", alpha=0.3, zorder=0)
-    ncol = 2 if n_subj > 6 else 1
-    ax.legend(loc="upper right", fontsize=10 * font_scale, ncol=ncol)
+    ax.legend(
+        loc="upper left",
+        bbox_to_anchor=(1.01, 1.0),
+        fontsize=10 * font_scale,
+        ncol=1,
+        frameon=False,
+    )
     ax.margins(x=0.03)
 
     if is_normalized_metric and compress_normalized_axis:
@@ -1059,6 +1174,7 @@ def main(cfg: DictConfig) -> None:
                     "model_label": model_label,
                     "aggregated_df": agg_df,
                     "summary_df": summary_df,
+                    "model_dir": child,
                 }
             )
 
@@ -1093,6 +1209,7 @@ def main(cfg: DictConfig) -> None:
                 "model_label": path.parent.name,
                 "aggregated_df": df,
                 "summary_df": summary_df,
+                "model_dir": path.parent,
             }
         )
 
@@ -1144,6 +1261,8 @@ def main(cfg: DictConfig) -> None:
             output_path=grouped_output,
             figsize=tuple(cfg.get("grouped_figsize", cfg.figsize)),
             y_limits=shared_y_limits,
+            group_sig_permutations=int(cfg.get("group_sig_permutations", 10000)),
+            group_sig_random_state=int(cfg.get("group_sig_random_state", 42)),
         )
 
     if bool(cfg.get("plot_subject_mean_across_models", True)):
