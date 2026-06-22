@@ -1,5 +1,6 @@
 # ──────────────────────────────────────────────────────────────
-# Configuration for residual neural encoding analysis (§3.3)
+# Configuration for residual neural encoding analysis
+# (cross-modal residualisation: remove the other modality's component)
 # See: cross_modal_neural_encoding/modeling/residual_encoding.py
 # ──────────────────────────────────────────────────────────────
 
@@ -26,18 +27,14 @@ design_matrix_mapping_file: "/project/def-afyshe-ab/hbalabin/comp_fmri_study_202
 embeddings_dir: "/scratch/hbalabin/coco"
 output_dir: "outputs/residual_encoding"
 
-# ── Structural targets ────────────────────────────────────────
-# Graph dataset matching structural probing analysis.
-dataset_hf_identifier: "helena-balabin/vg_coco_graphs_merged"
-dataset_split: "train"
-coco_id_column: "cocoid"
-text_graph_column: "amr_graphs"
-vision_graph_column: "action_image_graphs"
-
 # ── Residualisation ───────────────────────────────────────────
-# Ridge α for the s → e regression (W* in Eq. 1 of the paper).
+# Each embedding is residualised against the *other* modality's embedding:
+# a ridge regression W* (fit per training split) predicts the embedding from
+# the paired other-modality embedding, and ẽ = e − W*·r removes the
+# cross-modally shared component.
+# Ridge α for the other-modality → embedding regression.
 residual_alpha: 1.0
-# Also run with s permuted across stimuli as an empirical control.
+# Also run with the residual features permuted across stimuli as a control.
 run_permuted_control: true
 
 # ── VLM model & layer ────────────────────────────────────────

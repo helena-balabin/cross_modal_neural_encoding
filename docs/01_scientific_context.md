@@ -2,9 +2,11 @@
 
 ## Research Question
 
-Does the joint visual-linguistic representational space of a Vision-Language Model (VLM) predict neural responses in a **cross-modal** manner — i.e., can image embeddings predict brain responses to verbal descriptions of the same scenes, and vice versa?
+**What information do vision-language models share with the human brain across modalities, and is this sharing symmetric?**
 
-This question probes whether VLMs and the human brain share a **modality-invariant** representational structure for concept-level content, or whether their representations remain modality-specific even when the underlying semantic content is matched.
+Concretely: does the joint visual-linguistic representational space of a Vision-Language Model (VLM) predict neural responses in a **cross-modal** manner — can image embeddings predict brain responses to verbal descriptions of the same scenes, and vice versa — and is this cross-modal correspondence equally strong in both directions?
+
+This question probes whether VLMs and the human brain share a **modality-invariant** representational structure for concept-level content, or whether their representations remain modality-specific even when the underlying semantic content is matched. The *symmetry* part asks whether what is shared depends on the direction of transfer — a question taken up directly by the [residual encoding analysis](05_residual_encoding.md).
 
 ---
 

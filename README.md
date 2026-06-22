@@ -11,7 +11,7 @@ Full documentation: `docs/` (built with mkdocs).
 ```text
 ├── configs/                    <- Hydra YAML configuration files
 │   ├── modeling/               <- extract_embeddings, neural_encoding, predict_modalities,
-│   │                              residual_encoding, structural_probing
+│   │                              residual_encoding
 │   └── visualization/          <- matching visualisation configs
 │
 ├── cross_modal_neural_encoding/
@@ -22,14 +22,12 @@ Full documentation: `docs/` (built with mkdocs).
 │   │   ├── extract_embeddings.py   <- VLM hidden-state extraction via hooks
 │   │   ├── neural_encoding.py      <- Ridge regression encoding model
 │   │   ├── predict_modalities.py   <- Cross-modal embedding prediction (MLP / ridge)
-│   │   ├── residual_encoding.py    <- Structure-targeted residual ablation
-│   │   └── structural_probing.py   <- Graph-based structural probing
+│   │   └── residual_encoding.py    <- Cross-modal residual ablation
 │   └── visualization/
 │       ├── visualize_encoding_results.py
 │       ├── visualize_noise_ceiling.py
 │       ├── visualize_predict_modalities.py
-│       ├── visualize_residual_encoding.py
-│       └── visualize_structural_probing.py
+│       └── visualize_residual_encoding.py
 │
 ├── data/
 │   ├── coco_metadata/          <- COCO stimulus metadata CSV

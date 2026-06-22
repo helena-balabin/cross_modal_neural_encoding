@@ -2,6 +2,8 @@
 
 ## Overview
 
+**What information do vision-language models share with the human brain across modalities, and is this sharing symmetric?**
+
 This project investigates whether Vision-Language Model (VLM) representations exhibit **cross-modal neural alignment** — i.e., whether embeddings derived from one sensory modality (images) can predict brain responses to the corresponding stimuli presented in a different modality (text), and vice versa.
 
 fMRI responses are measured while human participants process COCO images and their corresponding captions. Single-trial BOLD responses are then regressed against embeddings extracted from a VLM to quantify how well the model's internal representations predict brain activity across and within modalities.
@@ -16,13 +18,12 @@ fMRI responses are measured while human participants process COCO images and the
 | [Datasets](02_datasets.md) | fMRI acquisition, stimuli, BIDS structure |
 | [Feature Extraction](03_feature_extraction.md) | VLM architecture, embedding extraction, pooling |
 | [Neural Encoding](04_neural_encoding.md) | Ridge regression, cross-validation, permutation tests |
-| [Structural Analysis](05_structural_analysis.md) | Graph-based structural probing of VLM representations |
-| [Residual Neural Encoding](06_residual_encoding.md) | Structure-targeted residual ablation |
-| [Models](07_models.md) | VLM model details |
-| [Evaluation & Statistics](08_evaluation_and_statistics.md) | Noise ceiling, metrics, significance testing |
-| [Configuration](09_configuration.md) | Hydra parameters, reproducibility |
-| [Visualization](10_visualization.md) | Surface projection, result figures |
-| [Predict Modalities](11_predict_modalities.md) | Cross-modal embedding prediction and heatmaps |
+| [Residual Neural Encoding](05_residual_encoding.md) | Cross-modal residual ablation of VLM embeddings |
+| [Models](06_models.md) | VLM model details |
+| [Evaluation & Statistics](07_evaluation_and_statistics.md) | Noise ceiling, metrics, significance testing |
+| [Configuration](08_configuration.md) | Hydra parameters, reproducibility |
+| [Visualization](09_visualization.md) | Surface projection, result figures |
+| [Predict Modalities](10_predict_modalities.md) | Cross-modal embedding prediction and heatmaps |
 
 ---
 

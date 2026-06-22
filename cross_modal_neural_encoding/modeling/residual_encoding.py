@@ -1,24 +1,24 @@
-"""Residual neural encoding: structure-targeted ablation of VLM embeddings.
+"""Residual neural encoding: cross-modal ablation of VLM embeddings.
 
-Implements §3.3 of the paper.  For each encoding condition in the 2×2
-cross-modal design, a ridge regression W* is fit on the training split to
-predict each embedding dimension from the structural feature vector
-**s** ∈ ℝ³ (node count, edge count, graph depth).  The residualised
-embedding **ẽ** = **e** − W***s** is then used in the full encoding
-pipeline in place of **e**.
+For each encoding condition in the 2×2 cross-modal design, a ridge
+regression W* is fit on the training split to predict each embedding
+dimension from the *other* modality's embedding **r** (the linear
+text→vision / vision→text mapping).  The residualised embedding
+**ẽ** = **e** − W***r** removes the cross-modally predictable (shared)
+component and is then used in the full encoding pipeline in place of **e**:
 
-A selective drop in cross-modal but not within-modality encoding accuracy
-after residualisation constitutes evidence that compositional structure is
+    - text embeddings   → remove the part predictable from vision embeddings
+    - vision embeddings → remove the part predictable from text embeddings
+
+What remains is modality-*private* information.  A selective drop in
+cross-modal but not within-modality encoding accuracy after residualisation
+constitutes evidence that cross-modally shared representational content is
 the principal carrier of cross-modal brain alignment.
 
-Modality-specific structural features (§3.3):
-    - text embeddings → AMR graph properties  (amr_n_nodes / edges / depth)
-    - vision embeddings → action graph properties (coco_a_nodes / edges / depth)
-
-An optional permuted-s control is also supported: **s** is randomly
-permuted across stimuli before fitting W*, providing an empirical baseline
-for the magnitude of accuracy change attributable to the residualisation
-procedure itself.
+An optional permuted control is also supported: the residual features **r**
+are randomly permuted across stimuli before fitting W*, providing an
+empirical baseline for the magnitude of accuracy change attributable to the
+residualisation procedure itself.
 
 Usage
 -----
@@ -43,7 +43,6 @@ from cross_modal_neural_encoding.config import PROJ_ROOT
 from cross_modal_neural_encoding.modeling.neural_encoding import (
     align_single_trials,
     build_events_from_stimorder,
-    build_structural_feature_vectors,
     load_condition_to_cocoid_modality,
     load_designinfo_stimulus_ids_and_num_runs,
     load_embeddings,
@@ -53,51 +52,12 @@ from cross_modal_neural_encoding.modeling.neural_encoding import (
 from cross_modal_neural_encoding.utils import (
     build_fmri_cache,
     compute_nc_by_modality,
-    get_graph_metric,
     load_brain_mask,
     load_brain_mask_img,
     load_design_matrix_mapping,
     normalize_betas_per_run,
     save_voxelwise_nifti,
 )
-
-
-def load_structural_targets(
-    dataset_name: str,
-    split: str,
-    coco_id_column: str,
-    text_graph_column: str,
-    vision_graph_column: str,
-) -> tuple[np.ndarray, dict[str, np.ndarray]]:
-    """Load structural target properties from a graph-annotated dataset.
-
-    Returns AMR-like (text) and action-like (vision) targets derived from
-    graph dictionaries, matching the structural probing analysis.
-    """
-    from datasets import load_dataset
-
-    logger.info(f"Loading structural targets from dataset {dataset_name}, split {split}")
-    dataset = load_dataset(dataset_name, split=split)
-
-    if coco_id_column not in dataset.column_names:
-        raise KeyError(f"COCO ID column '{coco_id_column}' not found in dataset.")
-
-    coco_ids = np.array([int(cid) for cid in dataset[coco_id_column]])
-
-    text_graphs = dataset[text_graph_column]
-    vision_graphs = dataset[vision_graph_column]
-
-    targets = {
-        "amr_n_nodes": np.array([get_graph_metric(g, "num_nodes") for g in text_graphs]),
-        "amr_n_edges": np.array([get_graph_metric(g, "num_edges") for g in text_graphs]),
-        "amr_graph_depth": np.array([get_graph_metric(g, "depth") for g in text_graphs]),
-        "coco_a_nodes": np.array([get_graph_metric(g, "num_nodes") for g in vision_graphs]),
-        "coco_a_edges": np.array([get_graph_metric(g, "num_edges") for g in vision_graphs]),
-        "coco_a_graph_depth": np.array([get_graph_metric(g, "depth") for g in vision_graphs]),
-    }
-
-    logger.info(f"Loaded structural targets for {len(coco_ids)} stimuli")
-    return coco_ids, targets
 
 
 @hydra.main(
@@ -137,25 +97,13 @@ def main(cfg: DictConfig) -> None:
     run_permuted_control: bool = bool(cfg.get("run_permuted_control", True))
     conditions: dict = OmegaConf.to_container(cfg.conditions, resolve=True)  # type: ignore[assignment]
 
-    # -- load structural targets (full COCO-A, aligned by COCO ID) -----------
-    logger.info("Loading structural targets …")
-    target_coco_ids, struct_targets = load_structural_targets(
-        dataset_name=cfg.get(
-            "dataset_hf_identifier",
-            cfg.get("dataset_name", "helena-balabin/vg_coco_graphs_merged"),
-        ),
-        split=cfg.get("dataset_split", "train"),
-        coco_id_column=cfg.get("coco_id_column", "cocoid"),
-        text_graph_column=cfg.get("text_graph_column", "amr_graphs"),
-        vision_graph_column=cfg.get("vision_graph_column", "action_image_graphs"),
-    )
-
     # -- load & PCA embeddings (shared across subjects) ----------------------
+    # Both modalities are always loaded: each condition residualises its
+    # embedding against the *other* modality's embedding.
     logger.info("Loading VLM embeddings …")
     embed_data: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
-    for cond_cfg in conditions.values():
-        emod = cond_cfg["embed_modality"]
+    for emod in ("text", "vision"):
         if emod in embed_data:
             continue
         lyr = layer_for_modality[emod]
@@ -219,34 +167,39 @@ def main(cfg: DictConfig) -> None:
             emod = cond_cfg["embed_modality"]
             fmod = cond_cfg["fmri_modality"]
 
+            other_mod = "vision" if emod == "text" else "text"
             embed_ids, embed_feats = embed_data[emod]
+            other_ids, other_feats = embed_data[other_mod]
             trial_cids, trial_betas, noise_ceiling_r, voxel_keep = fmri_cache[fmod]
 
             X, Y, groups = align_single_trials(embed_ids, embed_feats, trial_cids, trial_betas)
 
-            # Build structural feature vectors s ∈ ℝ³ for each trial,
-            # aligned to the study's 252 COCO IDs only.
-            s = build_structural_feature_vectors(groups, struct_targets, target_coco_ids, emod)
-            valid_s = np.all(np.isfinite(s), axis=1)
-            if not valid_s.all():
+            # Build the residual-feature matrix r for each trial: the *other*
+            # modality's PCA embedding for the same stimulus (COCO ID).  W* is
+            # fit per training split inside run_encoding to remove the linearly
+            # predictable (cross-modally shared) component from the embedding.
+            other_lookup = {int(cid): i for i, cid in enumerate(other_ids)}
+            valid_r = np.array([int(cid) in other_lookup for cid in groups])
+            if not valid_r.all():
                 logger.warning(
-                    f"    {valid_s.sum()}/{len(valid_s)} trials have structural "
-                    "features — dropping the rest."
+                    f"    {valid_r.sum()}/{len(valid_r)} trials have a paired "
+                    f"{other_mod} embedding — dropping the rest."
                 )
-            X, Y, groups, s = X[valid_s], Y[valid_s], groups[valid_s], s[valid_s]
+            X, Y, groups = X[valid_r], Y[valid_r], groups[valid_r]
+            r = other_feats[[other_lookup[int(cid)] for cid in groups]]
 
             n_unique = len(np.unique(groups))
             if n_unique < max(n_outer_folds, n_inner_folds + 1):
                 logger.warning(f"    Too few unique stimuli ({n_unique}) — skipping {cond_name}.")
                 continue
 
-            # Variants: real s, and optionally permuted s (control)
-            variants: list[tuple[str, np.ndarray]] = [(cond_name, s)]
+            # Variants: real r, and optionally permuted r (control)
+            variants: list[tuple[str, np.ndarray]] = [(cond_name, r)]
             if run_permuted_control:
-                s_perm = s[np.random.default_rng(42).permutation(len(s))]
-                variants.append((f"permuted_{cond_name}", s_perm))
+                r_perm = r[np.random.default_rng(42).permutation(len(r))]
+                variants.append((f"permuted_{cond_name}", r_perm))
 
-            for label, s_input in variants:
+            for label, r_input in variants:
                 logger.info(
                     f"  {'[permuted] ' if 'permuted' in label else ''}"
                     f"{emod} embed → {fmod} fMRI (residualised)"
@@ -261,7 +214,7 @@ def main(cfg: DictConfig) -> None:
                     n_outer_folds=n_outer_folds,
                     noise_ceiling=noise_ceiling_r,
                     average_test_by_group=True,
-                    structural_features=s_input,
+                    residual_features=r_input,
                     residual_alpha=residual_alpha,
                 )
                 if "mean_normalized_r" in result:

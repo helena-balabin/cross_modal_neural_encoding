@@ -130,7 +130,7 @@ Aggregated across subjects:
 
 ## Residual Neural Encoding
 
-The structure-targeted residual analysis (§3.3) is a separate step run via `residual_encoding.py`. It extends the standard pipeline with a within-split ablation of the compositional structural component from the embeddings before fitting the encoding model. See [Structural Analysis](05_structural_analysis.md) for the full method description.
+The cross-modal residual analysis is a separate step run via `residual_encoding.py`. It extends the standard pipeline with a within-split ablation of the component of each embedding that is linearly predictable from the other modality's embedding, before fitting the encoding model. See [Residual Neural Encoding](05_residual_encoding.md) for the full method description.
 
 ```bash
 python -m cross_modal_neural_encoding.modeling.residual_encoding

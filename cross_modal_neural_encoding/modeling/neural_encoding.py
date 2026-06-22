@@ -315,54 +315,6 @@ def align_single_trials(
     return X, trial_betas, trial_coco_ids
 
 
-def build_structural_feature_vectors(
-    coco_ids: np.ndarray,
-    targets: dict[str, np.ndarray],
-    target_coco_ids: np.ndarray,
-    embed_modality: str,
-) -> np.ndarray:
-    """Build structural feature vectors s ∈ ℝ³ per trial for residualization.
-
-    Modality matching (§3.3): text embeddings → AMR graph properties;
-    vision embeddings → action graph properties.
-
-    Parameters
-    ----------
-    coco_ids : (n_trials,)
-        COCO ID for each trial (may contain repeats).
-    targets : dict[str, np.ndarray]
-        Structural target arrays keyed by column name.
-    target_coco_ids : (n_stimuli,)
-        COCO IDs corresponding to each row of the target arrays.
-    embed_modality : "text" or "vision"
-        Determines which graph's properties to use.
-
-    Returns
-    -------
-    s : (n_trials, 3) float32 — [node_count, edge_count, graph_depth].
-        Rows for COCO IDs absent from target_coco_ids are NaN.
-    """
-    if embed_modality == "text":
-        col_nodes, col_edges, col_depth = ("amr_n_nodes", "amr_n_edges", "amr_graph_depth")
-    else:
-        col_nodes, col_edges, col_depth = ("coco_a_nodes", "coco_a_edges", "coco_a_graph_depth")
-
-    target_lookup: dict[int, np.ndarray] = {
-        int(cid): np.array(
-            [targets[col_nodes][i], targets[col_edges][i], targets[col_depth][i]],
-            dtype=np.float32,
-        )
-        for i, cid in enumerate(target_coco_ids)
-    }
-
-    nan_row = np.full(3, np.nan, dtype=np.float32)
-    s = np.stack(
-        [target_lookup.get(int(cid), nan_row) for cid in coco_ids],
-        axis=0,
-    )
-    return s
-
-
 # ---------------------------------------------------------------------------
 # Encoding model
 # ---------------------------------------------------------------------------
@@ -413,7 +365,7 @@ def run_encoding(
     noise_ceiling: np.ndarray | None = None,
     random_state: int = 42,
     average_test_by_group: bool = True,
-    structural_features: np.ndarray | None = None,
+    residual_features: np.ndarray | None = None,
     residual_alpha: float = 1.0,
     verbose: bool = True,
 ) -> dict:
@@ -447,14 +399,15 @@ def run_encoding(
     random_state : random seed for the train/test split.
     average_test_by_group : if True, average held-out test responses per
         stimulus before scoring.
-    structural_features : optional (n_samples, 3) structural feature vectors
-        **s** (node count, edge count, graph depth) aligned to trials.
+    residual_features : optional (n_samples, n_residual_features) regressors
+        aligned to trials — typically the *other* modality's embeddings.
         When provided, a ridge regression W* is fit on the training split to
-        predict each embedding dimension from **s**, and the residual
-        **ẽ** = **e** − W***s** replaces **e** before the encoding model is
-        fit.  This is the within-split residualization of §3.3.
-    residual_alpha : ridge regularisation strength for the **s** → **e**
-        regression (default 1.0).
+        predict each embedding dimension from these features, and the residual
+        **ẽ** = **e** − W***r** replaces **e** before the encoding model is
+        fit.  This removes the cross-modally predictable (shared) component,
+        leaving only modality-private information.
+    residual_alpha : ridge regularisation strength for the residual-feature
+        → **e** regression (default 1.0).
 
     Returns
     -------
@@ -504,16 +457,17 @@ def run_encoding(
         X_train = scaler.fit_transform(X_train)
         X_test = scaler.transform(X_test)
 
-        # ---- 4b. Structure residualization (§3.3) ----------------------
-        # Fit W* on training split only, then subtract linear contribution
-        # of structural features s from both train and test embeddings.
-        if structural_features is not None:
-            s_train = structural_features[train_idx].astype("float32")
-            s_test = structural_features[test_idx].astype("float32")
+        # ---- 4b. Cross-modal residualization ---------------------------
+        # Fit W* on training split only, then subtract the linear contribution
+        # of the residual features (the other modality's embeddings) from both
+        # train and test embeddings, removing the cross-modally shared part.
+        if residual_features is not None:
+            r_train = residual_features[train_idx].astype("float32")
+            r_test = residual_features[test_idx].astype("float32")
             resid_model = Ridge(alpha=residual_alpha, fit_intercept=True)
-            resid_model.fit(s_train, X_train)
-            X_train = X_train - resid_model.predict(s_train)
-            X_test = X_test - resid_model.predict(s_test)
+            resid_model.fit(r_train, X_train)
+            X_train = X_train - resid_model.predict(r_train)
+            X_test = X_test - resid_model.predict(r_test)
 
         cv_scores = np.zeros((n_fracs, n_voxels), dtype=np.float64)
         for tr_idx, val_idx in inner_splits:
