@@ -13,9 +13,42 @@ output_dir: "reports/figures/predict_modalities"
 text_to_vision_output: null
 vision_to_text_output: null
 
-# Optional ordering (use embedding folder names)
-text_model_order: []
-vision_model_order: []
+# Axis ordering: VLMs (both-modality models) first, then the modality-specific
+# encoders, so the shared models are grouped clearly. Uses CSV model labels.
+text_model_order:
+  # VLMs (text + vision towers)
+  - Qwen--Qwen3.5-0.8B-Base
+  - Qwen--Qwen3.5-2B-Base
+  - Qwen--Qwen3.5-4B-Base
+  - Qwen--Qwen3.5-9B-Base
+  - OpenGVLab--InternVL3_5-1B-HF
+  - OpenGVLab--InternVL3_5-2B-HF
+  - OpenGVLab--InternVL3_5-4B-HF
+  - OpenGVLab--InternVL3_5-8B-HF
+  - laion--CLIP-ViT-L-14-laion2B-s32B-b82K
+  - laion--CLIP-ViT-H-14-laion2B-s32B-b79K
+  # text-only encoders
+  - EleutherAI--pythia-1.4b
+  - EleutherAI--pythia-6.9b
+  - facebook--opt-1.3b
+  - facebook--opt-2.7b
+vision_model_order:
+  # VLMs (text + vision towers)
+  - Qwen--Qwen3.5-0.8B-Base
+  - Qwen--Qwen3.5-2B-Base
+  - Qwen--Qwen3.5-4B-Base
+  - Qwen--Qwen3.5-9B-Base
+  - OpenGVLab--InternVL3_5-1B-HF
+  - OpenGVLab--InternVL3_5-2B-HF
+  - OpenGVLab--InternVL3_5-4B-HF
+  - OpenGVLab--InternVL3_5-8B-HF
+  - laion--CLIP-ViT-L-14-laion2B-s32B-b82K
+  - laion--CLIP-ViT-H-14-laion2B-s32B-b79K
+  # vision-only encoders
+  - facebook--dinov2-large
+  - facebook--dinov2-giant
+  - facebook--ijepa_vith14_22k
+  - facebook--ijepa_vitg16_22k
 
 # Plot options
 annotate: false
@@ -24,4 +57,15 @@ figsize: [10, 8]
 
 # Color scale bounds (null = auto)
 vmin: 0.0
-vmax: 0.4
+vmax: 0.6
+
+# Optional second results file → difference (e.g. nonlinear minus linear) heatmaps
+results_csv_2: null
+label_1: "linear"
+label_2: "nonlinear"
+text_to_vision_diff_output: null
+vision_to_text_diff_output: null
+# Difference heatmaps are centered on 0 (white = no change). diff_vmax sets the
+# symmetric half-range, shared across both diff panels (-diff_vmax .. +diff_vmax);
+# null = auto (max |difference|, nothing clipped).
+diff_vmax: 0.1

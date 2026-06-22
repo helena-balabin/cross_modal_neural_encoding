@@ -67,7 +67,8 @@ def _plot_heatmap(
     ax.set_yticks(np.arange(len(row_labels)))
     ax.set_xticklabels(col_labels, rotation=45, ha="right", fontsize=10 * font_scale)
     ax.set_yticklabels(row_labels, fontsize=10 * font_scale)
-    ax.set_title(title, fontsize=13 * font_scale, pad=10)
+    mean_val = float(np.nanmean(data))
+    ax.set_title(f"{title}\nmean = {mean_val:.3f}", fontsize=13 * font_scale, pad=10)
     ax.set_xlabel(xlabel, fontsize=11 * font_scale, labelpad=8)
     ax.set_ylabel(ylabel, fontsize=11 * font_scale, labelpad=8)
 
@@ -147,6 +148,9 @@ def _plot_single_results(
     vision_order = cfg.get("vision_model_order") or []
     vmin = cfg.get("vmin")
     vmax = cfg.get("vmax")
+    # Linear (ridge) vs nonlinear (MLP), inferred from the results' regressor column.
+    regressor = str(df["regressor"].iloc[0]) if "regressor" in df.columns and len(df) else ""
+    setting = "Linear" if regressor == "ridge" else "Nonlinear"
 
     pastel_blue = _make_colormap(["#F2F6FB", "#BBD4F0", "#6FA8DC"])
     pastel_yellow = _make_colormap(["#FFFBF0", "#FFE8A1", "#FFC700"])
@@ -163,7 +167,7 @@ def _plot_single_results(
             pivot_tv.values,
             row_labels,
             col_labels,
-            title="Text → Vision prediction (mean Pearson r)",
+            title=f"{setting}: Text → Vision prediction (mean Pearson r)",
             xlabel="Output (vision encoders)",
             ylabel="Input (text encoders)",
             cmap=pastel_blue,
@@ -187,7 +191,7 @@ def _plot_single_results(
             pivot_vt.values,
             row_labels,
             col_labels,
-            title="Vision → Text prediction (mean Pearson r)",
+            title=f"{setting}: Vision → Text prediction (mean Pearson r)",
             xlabel="Output (text encoders)",
             ylabel="Input (vision encoders)",
             cmap=pastel_yellow,
@@ -200,6 +204,20 @@ def _plot_single_results(
         )
     else:
         logger.warning("No vision_to_text rows found in results.")
+
+
+def _symmetric_limits(data: np.ndarray, half_range: float | None) -> tuple[float, float]:
+    """Color bounds centered on 0 so the diverging midpoint (white) maps to 0.
+
+    ``half_range`` caps the symmetric span; ``None`` uses max(|data|) so nothing clips.
+    """
+    if half_range is not None:
+        lim = float(half_range)
+    else:
+        lim = float(np.nanmax(np.abs(data)))
+    if not np.isfinite(lim) or lim <= 0.0:
+        lim = 1e-6
+    return -lim, lim
 
 
 def _plot_difference_results(
@@ -215,8 +233,7 @@ def _plot_difference_results(
 ) -> None:
     text_order = cfg.get("text_model_order") or []
     vision_order = cfg.get("vision_model_order") or []
-    diff_vmin = cfg.get("diff_vmin")
-    diff_vmax = cfg.get("diff_vmax")
+    diff_vmax = cfg.get("diff_vmax")  # optional symmetric half-range cap (None = auto)
 
     diverging_cmap = _make_colormap(["#E26060", "#F2F2F2", "#9CE26A"])
 
@@ -225,6 +242,7 @@ def _plot_difference_results(
 
     if pivot1_tv is not None and pivot2_tv is not None:
         diff_tv = pivot2_tv.values - pivot1_tv.values
+        vmin_tv, vmax_tv = _symmetric_limits(diff_tv, diff_vmax)
         row_labels = [_pretty_label(x) for x in pivot2_tv.index.tolist()]
         col_labels = [_pretty_label(x) for x in pivot2_tv.columns.tolist()]
         output_path = _resolve_output_path(
@@ -241,8 +259,8 @@ def _plot_difference_results(
             ylabel="Input (text encoders)",
             cmap=diverging_cmap,
             output_path=output_path,
-            vmin=diff_vmin,
-            vmax=diff_vmax,
+            vmin=vmin_tv,
+            vmax=vmax_tv,
             annotate=annotate,
             font_scale=font_scale,
             figsize=figsize,
@@ -254,6 +272,7 @@ def _plot_difference_results(
 
     if pivot1_vt is not None and pivot2_vt is not None:
         diff_vt = pivot2_vt.values - pivot1_vt.values
+        vmin_vt, vmax_vt = _symmetric_limits(diff_vt, diff_vmax)
         row_labels = [_pretty_label(x) for x in pivot2_vt.index.tolist()]
         col_labels = [_pretty_label(x) for x in pivot2_vt.columns.tolist()]
         output_path = _resolve_output_path(
@@ -270,8 +289,8 @@ def _plot_difference_results(
             ylabel="Input (vision encoders)",
             cmap=diverging_cmap,
             output_path=output_path,
-            vmin=diff_vmin,
-            vmax=diff_vmax,
+            vmin=vmin_vt,
+            vmax=vmax_vt,
             annotate=annotate,
             font_scale=font_scale,
             figsize=figsize,

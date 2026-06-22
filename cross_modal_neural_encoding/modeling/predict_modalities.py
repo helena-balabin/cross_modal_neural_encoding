@@ -614,6 +614,10 @@ _LANGUAGE_ONLY_PATTERNS = ("pythia", "/opt-", "gpt2", "gpt-neo", "llama", "mistr
 
 def _infer_model_type(model_name: str, default: str) -> str:
     name_lower = model_name.lower()
+    # CLIP is a VLM with separate text + vision towers; guard before the
+    # vision-only patterns so its "CLIP-ViT-..." name doesn't match "vit".
+    if "clip" in name_lower:
+        return "vlm"
     if any(p in name_lower for p in _VISION_ONLY_PATTERNS):
         return "vision_only"
     if any(p in name_lower for p in _LANGUAGE_ONLY_PATTERNS):
