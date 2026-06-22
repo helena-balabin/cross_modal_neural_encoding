@@ -42,6 +42,10 @@ alpha: 0.05
 use_group_level_significance: true
 group_sig_permutations: 10000
 group_sig_random_state: 42
+# Multiple-comparison correction applied to the group-level p-values across
+# all model x condition tests shown in a figure. Stars then mark q-values.
+#   fdr_bh = Benjamini-Hochberg FDR (default);  none = no correction.
+group_sig_correction: fdr_bh
 
 # ── Output ────────────────────────────────────────────────────
 # Path to save figure (null = reports/figures/encoding_results.png)

@@ -30,7 +30,9 @@ import pandas as pd
 from cross_modal_neural_encoding.config import FIGURES_DIR, PROJ_ROOT
 from cross_modal_neural_encoding.utils import (
     CONDITION_LABELS,
+    benjamini_hochberg,
     configure_plot_fonts,
+    short_model_label,
     signflip_pvalue_greater,
     significance_label,
 )
@@ -92,15 +94,6 @@ configure_plot_fonts()
 # ═══════════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════
-
-
-def _short_model_label(model_label: str) -> str:
-    """Drop the redundant ``vendor--`` / ``vendor/`` prefix for display."""
-    label = model_label
-    for sep in ("--", "/"):
-        if sep in label:
-            label = label.rsplit(sep, 1)[-1]
-    return label
 
 
 def _model_category_rank(model_label: str) -> tuple[int, str]:
@@ -396,6 +389,7 @@ def _plot_model_row(
     use_group_level_significance: bool,
     group_sig_permutations: int,
     group_sig_random_state: int,
+    group_sig_correction: str,
     font_scale: float,
     compress_normalized_axis: bool,
     normalized_axis_linthresh: float,
@@ -429,6 +423,10 @@ def _plot_model_row(
             n_permutations=group_sig_permutations,
             random_state=group_sig_random_state,
         )
+
+    # Correct for multiple comparisons across this model's conditions.
+    if group_sig_correction == "fdr_bh":
+        p_values = benjamini_hochberg(p_values)
 
     is_normalized_metric = "normalized" in metric.lower()
 
@@ -644,6 +642,7 @@ def plot_encoding_results(
     use_group_level_significance: bool = True,
     group_sig_permutations: int = 10000,
     group_sig_random_state: int = 42,
+    group_sig_correction: str = "fdr_bh",
     font_scale: float = 1.0,
     compress_normalized_axis: bool = True,
     normalized_axis_linthresh: float = 0.08,
@@ -687,6 +686,7 @@ def plot_encoding_results(
             use_group_level_significance=use_group_level_significance,
             group_sig_permutations=group_sig_permutations,
             group_sig_random_state=group_sig_random_state,
+            group_sig_correction=group_sig_correction,
             font_scale=font_scale,
             compress_normalized_axis=compress_normalized_axis,
             normalized_axis_linthresh=normalized_axis_linthresh,
@@ -720,6 +720,7 @@ def plot_grouped_model_means(
     y_limits: tuple[float, float] | None,
     group_sig_permutations: int = 10000,
     group_sig_random_state: int = 42,
+    group_sig_correction: str = "fdr_bh",
 ) -> None:
     """Plot grouped bars comparing model means across conditions.
 
@@ -779,6 +780,11 @@ def plot_grouped_model_means(
         for cond, p in zip(model_conditions, cond_pvals):
             pvals[i, conditions.index(cond)] = p
 
+    # Correct for multiple comparisons across all model x condition tests
+    # shown in this figure (NaN/"na" cells are excluded from the family).
+    if group_sig_correction == "fdr_bh":
+        pvals = benjamini_hochberg(pvals)
+
     is_normalized_metric = "normalized" in metric.lower()
 
     # Adaptive width so individual bars stay readable as the model count
@@ -835,7 +841,7 @@ def plot_grouped_model_means(
             edgecolor="#4A4A4A",
             linewidth=0.5,
             alpha=0.9,
-            label=_short_model_label(label),
+            label=short_model_label(label),
             zorder=3,
         )
 
@@ -908,20 +914,24 @@ def plot_grouped_model_means(
     ax.add_artist(model_legend)
 
     # Second legend explaining the significance stars (vs. chance).
+    stat_sym = "q" if group_sig_correction == "fdr_bh" else "p"
     sig_entries = [
-        ("***", "p < 0.001"),
-        ("**", "p < 0.01"),
-        ("*", f"p < {alpha:g}"),
+        ("***", f"{stat_sym} < 0.001"),
+        ("**", f"{stat_sym} < 0.01"),
+        ("*", f"{stat_sym} < {alpha:g}"),
         ("ns", "not significant"),
     ]
     sig_handles = [Line2D([], [], linestyle="none") for _ in sig_entries]
     sig_labels = [f"{stars}  {desc}" for stars, desc in sig_entries]
+    sig_title = "Significance vs. chance"
+    if group_sig_correction == "fdr_bh":
+        sig_title += "\n(BH-FDR corrected)"
     sig_legend = ax.legend(
         sig_handles,
         sig_labels,
         loc="upper right",
         fontsize=8.5 * font_scale,
-        title="Significance vs. chance",
+        title=sig_title,
         title_fontsize=8.5 * font_scale,
         frameon=True,
         framealpha=0.9,
@@ -1215,6 +1225,7 @@ def main(cfg: DictConfig) -> None:
 
     output_path = Path(cfg.output_path) if cfg.output_path else None
     font_scale = float(cfg.get("font_scale", 1.15))
+    group_sig_correction = str(cfg.get("group_sig_correction", "fdr_bh"))
     compress_normalized_axis = bool(cfg.get("compress_normalized_axis", False))
     normalized_axis_linthresh = float(cfg.get("normalized_axis_linthresh", 0.08))
     share_y_limits = bool(cfg.get("share_y_limits", True))
@@ -1241,6 +1252,7 @@ def main(cfg: DictConfig) -> None:
             use_group_level_significance=bool(cfg.get("use_group_level_significance", True)),
             group_sig_permutations=int(cfg.get("group_sig_permutations", 10000)),
             group_sig_random_state=int(cfg.get("group_sig_random_state", 42)),
+            group_sig_correction=group_sig_correction,
             font_scale=font_scale,
             compress_normalized_axis=compress_normalized_axis,
             normalized_axis_linthresh=normalized_axis_linthresh,
@@ -1265,6 +1277,7 @@ def main(cfg: DictConfig) -> None:
             y_limits=shared_y_limits,
             group_sig_permutations=int(cfg.get("group_sig_permutations", 10000)),
             group_sig_random_state=int(cfg.get("group_sig_random_state", 42)),
+            group_sig_correction=group_sig_correction,
         )
 
     if bool(cfg.get("plot_subject_mean_across_models", True)):

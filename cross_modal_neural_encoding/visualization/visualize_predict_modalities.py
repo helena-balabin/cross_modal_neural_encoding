@@ -26,13 +26,13 @@ from omegaconf import DictConfig
 import pandas as pd
 
 from cross_modal_neural_encoding.config import FIGURES_DIR, PROJ_ROOT
-from cross_modal_neural_encoding.utils import configure_plot_fonts
+from cross_modal_neural_encoding.utils import configure_plot_fonts, short_model_label
 
 configure_plot_fonts()
 
 
 def _pretty_label(label: str) -> str:
-    return label.replace("--", "/")
+    return short_model_label(label)
 
 
 def _make_colormap(colors: list[str]) -> LinearSegmentedColormap:

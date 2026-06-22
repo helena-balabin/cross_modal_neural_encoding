@@ -48,6 +48,18 @@ def configure_plot_fonts(
     rcParams["font.sans-serif"] = sans_serif
 
 
+def short_model_label(model_label: str) -> str:
+    """Drop the redundant ``vendor--`` / ``vendor/`` prefix for display.
+
+    E.g. ``OpenGVLab--InternVL3_5-1B-HF`` -> ``InternVL3_5-1B-HF``.
+    """
+    label = model_label
+    for sep in ("--", "/"):
+        if sep in label:
+            label = label.rsplit(sep, 1)[-1]
+    return label
+
+
 def significance_label(p: float, alpha: float = 0.05) -> str:
     """Return a significance annotation string for *p*."""
     if np.isnan(p):
@@ -59,6 +71,36 @@ def significance_label(p: float, alpha: float = 0.05) -> str:
     if p < alpha:
         return "*"
     return "ns"
+
+
+def benjamini_hochberg(pvalues: np.ndarray) -> np.ndarray:
+    """Benjamini-Hochberg FDR correction.
+
+    Returns q-values (adjusted p-values) with the same shape as *pvalues*.
+    ``NaN`` entries are excluded from the ranking (family size) and returned
+    as ``NaN``, so missing/inapplicable tests do not inflate the correction.
+    """
+    pvals = np.asarray(pvalues, dtype=float)
+    flat = pvals.ravel()
+    finite_mask = np.isfinite(flat)
+    q_flat = np.full(flat.shape, np.nan, dtype=float)
+
+    p = flat[finite_mask]
+    m = p.size
+    if m == 0:
+        return q_flat.reshape(pvals.shape)
+
+    order = np.argsort(p)
+    ranked = p[order]
+    adjusted = ranked * m / np.arange(1, m + 1)
+    # Enforce monotonicity (step-up): q_(i) = min over j>=i.
+    adjusted = np.minimum.accumulate(adjusted[::-1])[::-1]
+    adjusted = np.clip(adjusted, 0.0, 1.0)
+
+    q_finite = np.empty(m, dtype=float)
+    q_finite[order] = adjusted
+    q_flat[finite_mask] = q_finite
+    return q_flat.reshape(pvals.shape)
 
 
 def signflip_pvalue_greater(
