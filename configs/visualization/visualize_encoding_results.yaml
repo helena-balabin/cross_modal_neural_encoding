@@ -55,7 +55,7 @@ plot_per_model_rows: false
 plot_grouped_models: true
 grouped_output_path: null
 # Width auto-expands with the number of models; this is the minimum.
-grouped_figsize: [12, 4.5]
+grouped_figsize: [12, 3.8]
 
 # Supplementary per-subject plot (mean across models)
 plot_subject_mean_across_models: true
@@ -64,6 +64,10 @@ subjects_mean_figsize: [10, 3]
 
 # Share y-limits across all figures for comparability
 share_y_limits: true
+
+# Explicit y-axis limits [min, max] applied to all figures (overrides the
+# auto-computed shared limits when set; use null to auto-scale to the data).
+y_limits: [-0.02, 0.25]
 
 # ── Include panel with subject-level trajectories ─────────────
 show_subject_panel: true

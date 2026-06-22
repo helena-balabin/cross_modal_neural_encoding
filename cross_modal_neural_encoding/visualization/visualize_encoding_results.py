@@ -1218,16 +1218,18 @@ def main(cfg: DictConfig) -> None:
     compress_normalized_axis = bool(cfg.get("compress_normalized_axis", False))
     normalized_axis_linthresh = float(cfg.get("normalized_axis_linthresh", 0.08))
     share_y_limits = bool(cfg.get("share_y_limits", True))
-    shared_y_limits = (
-        _shared_y_limits(
+    y_limits_cfg = cfg.get("y_limits", None)
+    if y_limits_cfg is not None:
+        shared_y_limits = (float(y_limits_cfg[0]), float(y_limits_cfg[1]))
+    elif share_y_limits:
+        shared_y_limits = _shared_y_limits(
             model_results,
             metric=cfg.metric,
             compress_normalized_axis=compress_normalized_axis,
             normalized_axis_linthresh=normalized_axis_linthresh,
         )
-        if share_y_limits
-        else None
-    )
+    else:
+        shared_y_limits = None
 
     if bool(cfg.get("plot_per_model_rows", True)):
         plot_encoding_results(
