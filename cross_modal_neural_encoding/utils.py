@@ -33,7 +33,9 @@ def configure_plot_fonts(
     sans_serif: list[str] | None = None,
 ) -> None:
     """Configure matplotlib font defaults for plots."""
-    from matplotlib import rcParams
+    from pathlib import Path
+
+    from matplotlib import font_manager, rcParams
 
     if sans_serif is None:
         sans_serif = [
@@ -43,6 +45,27 @@ def configure_plot_fonts(
             "DejaVu Sans",
             "Arial",
         ]
+
+    # matplotlib's cached font list may predate installed fonts, and compute
+    # nodes may lack the system Lato package entirely, causing a silent fallback
+    # to DejaVu Sans. Register matching font files explicitly: first the fonts
+    # bundled with this package (always available on the shared filesystem), then
+    # any matching system fonts. The try/except is per-font so one unreadable
+    # file cannot abort the rest.
+    wanted = {name.split()[0].lower() for name in sans_serif}
+    bundled_dir = Path(__file__).resolve().parent / "assets" / "fonts"
+    font_paths = [str(p) for p in bundled_dir.glob("*.ttf")]
+    try:
+        font_paths += font_manager.findSystemFonts()
+    except Exception:  # pragma: no cover - best-effort system font discovery
+        pass
+    for font_path in font_paths:
+        if not any(Path(font_path).stem.lower().startswith(w) for w in wanted):
+            continue
+        try:
+            font_manager.fontManager.addfont(font_path)
+        except Exception:  # pragma: no cover - skip unreadable font files
+            continue
 
     rcParams["font.family"] = font_family
     rcParams["font.sans-serif"] = sans_serif

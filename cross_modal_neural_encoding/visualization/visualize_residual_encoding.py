@@ -1,20 +1,23 @@
-"""Visualize residual neural encoding results (§3.3).
+"""Visualize residual neural encoding results across all models.
 
-Produces a grouped bar chart comparing:
-    - Standard (unablated) encoding accuracy
-    - Structure-residualised encoding accuracy
-    - Permuted-s control (optional)
+Run this once after the residual encoding array has produced
+``outputs/residual_encoding/<model>/{summary,aggregated}.csv`` for every model.
+It produces two combined figures (all models in one figure each):
 
-for each of the four 2×2 conditions.  The expected signature of compositional
-structure as the carrier of cross-modal alignment is a **selective drop** in
-cross-modal conditions after residualisation, while within-modality conditions
-remain largely unchanged.
+    - ``residual_encoding_bars`` — residualised encoding accuracy as grouped bars
+      (one bar per model per condition), the *same* model-comparison figure the
+      main neural-encoding pipeline produces (reuses ``plot_grouped_model_means``).
+    - ``ablation_delta`` — grouped bars of ``residualised − standard`` per
+      condition for every model, so a drop after residualisation is a downward
+      (negative) bar. The expected signature is a larger negative Δ for the
+      cross-modal condition than for the matching within-modality condition.
 
 Usage::
 
     python -m cross_modal_neural_encoding.visualization.visualize_residual_encoding \\
-        standard_summary=/path/to/neural_encoding/.../summary.csv \\
-        residual_summary=/path/to/residual_encoding/.../summary.csv
+        residual_root=outputs/residual_encoding \\
+        encoding_root=outputs/neural_encoding \\
+        output_dir=reports/figures/residual_encoding
 """
 
 from __future__ import annotations
@@ -32,48 +35,75 @@ from cross_modal_neural_encoding.config import FIGURES_DIR, PROJ_ROOT
 from cross_modal_neural_encoding.utils import (
     CONDITION_LABELS,
     configure_plot_fonts,
-    signflip_pvalue_greater,
-    significance_label,
+    short_model_label,
+)
+from cross_modal_neural_encoding.visualization.visualize_encoding_results import (
+    VLM_MODEL_PALETTE,
+    _collect_model_dirs,
+    _model_category_rank,
+    load_aggregated,
+    load_summary,
+    plot_grouped_model_means,
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Constants
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Colours for the three bar groups
-COLOR_STANDARD = "#7EAEDB"  # blue — unablated baseline
-COLOR_RESIDUAL = "#E88989"  # red  — structure residualised
-COLOR_PERMUTED = "#EFBF63"  # amber — permuted-s control
-
 configure_plot_fonts()
 
 METRIC = "mean_normalized_r"
 
+# Delta plot condition order: group by embedding modality, within-then-cross,
+# so each pair of bars is the within-vs-cross contrast for one embedding.
+DELTA_CONDITION_ORDER = ["text_to_text", "text_to_image", "image_to_image", "image_to_text"]
+
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Data loading
+# Data helpers
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _load_per_subject(path: str | Path) -> pd.DataFrame:
-    return pd.read_csv(path)
+def _find_standard_summary(encoding_root: Path, model_label: str) -> Path | None:
+    """Locate the standard neural-encoding summary.csv for a model."""
+    for pattern in (f"*/{model_label}/summary.csv", f"*/*/{model_label}/summary.csv"):
+        matches = sorted(encoding_root.glob(pattern))
+        if matches:
+            return matches[0]
+    return None
 
 
-def _condition_means(
-    df: pd.DataFrame,
-    conditions: list[str],
-    metric: str = METRIC,
-) -> dict[str, np.ndarray]:
-    """Return per-subject metric values for each condition."""
-    out: dict[str, np.ndarray] = {}
-    for cond in conditions:
-        vals = df.loc[df["condition"] == cond, metric].values.astype(float)
-        out[cond] = np.array(vals)
-    return out
+def _drop_permuted_aggregated(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop permuted-control rows (index like ``permuted_text_to_image``)."""
+    return df[~df.index.astype(str).str.startswith("permuted")]
 
 
-def _pvalue(vals: np.ndarray) -> float:
-    return signflip_pvalue_greater(vals[np.isfinite(vals)])
+def _drop_permuted_summary(df: pd.DataFrame | None) -> pd.DataFrame | None:
+    """Drop permuted-control rows from a per-subject summary frame."""
+    if df is None:
+        return None
+    return df[~df["condition"].astype(str).str.startswith("permuted")].reset_index(drop=True)
+
+
+def _paired_delta(
+    standard_df: pd.DataFrame,
+    residual_df: pd.DataFrame,
+    condition: str,
+    metric: str,
+) -> tuple[float, float]:
+    """Mean and SEM of (residualised − standard) for a condition, paired by subject."""
+    std_vals = standard_df.loc[standard_df["condition"] == condition, metric].to_numpy(dtype=float)
+    res_vals = residual_df.loc[residual_df["condition"] == condition, metric].to_numpy(dtype=float)
+    n = min(len(std_vals), len(res_vals))
+    if n == 0:
+        return np.nan, 0.0
+    d = res_vals[:n] - std_vals[:n]
+    finite = d[np.isfinite(d)]
+    if not len(finite):
+        return np.nan, 0.0
+    mean = float(np.mean(finite))
+    sem = float(np.std(finite) / np.sqrt(len(finite))) if len(finite) > 1 else 0.0
+    return mean, sem
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -81,192 +111,94 @@ def _pvalue(vals: np.ndarray) -> float:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def plot_residual_comparison(
-    standard_df: pd.DataFrame,
-    residual_df: pd.DataFrame,
+def plot_combined_delta(
+    model_results: list[dict],
     *,
     metric: str = METRIC,
     output_path: Path,
-    show_permuted: bool = True,
+    font_scale: float = 1.15,
 ) -> None:
-    """Create grouped bar chart: unablated vs. residualised (vs. permuted).
+    """One figure: grouped bars of Δ(residualised − standard) per condition, all models.
 
-    Each group of bars corresponds to one encoding condition.  The drop from
-    the standard bar to the residual bar (and the absence of a similar drop in
-    the permuted control) is the key diagnostic.
+    x-axis = conditions (within/cross grouped per embedding modality); bars within
+    each condition = models. A drop after residualisation is a downward bar.
     """
-    base_conditions = list(CONDITION_LABELS.keys())
-    # Keep only conditions present in both dataframes
-    std_conds = set(standard_df["condition"].unique())
-    res_conds = set(residual_df["condition"].unique())
-    conditions = [c for c in base_conditions if c in std_conds and c in res_conds]
-    permuted_conditions = [f"permuted_{c}" for c in conditions]
-    has_permuted = show_permuted and all(pc in res_conds for pc in permuted_conditions)
+    items = [
+        it
+        for it in model_results
+        if it.get("summary_df") is not None and it.get("standard_summary_df") is not None
+    ]
+    if not items:
+        logger.warning("No models with both residual and standard summaries; skipping delta plot.")
+        return
+    items = sorted(items, key=lambda it: _model_category_rank(it["model_label"]))
 
-    n_conds = len(conditions)
-    n_bars = 3 if has_permuted else 2
-    bar_w = 0.22
-    group_w = n_bars * bar_w + 0.08
-    x = np.arange(n_conds) * group_w
+    present: set[str] = set()
+    for it in items:
+        present |= set(it["summary_df"]["condition"].unique()) & set(
+            it["standard_summary_df"]["condition"].unique()
+        )
+    conditions = [c for c in DELTA_CONDITION_ORDER if c in present]
+    conditions += [c for c in CONDITION_LABELS if c in present and c not in conditions]
 
-    fig, ax = plt.subplots(figsize=(2.6 * n_conds, 4.0))
+    n_models = len(items)
+    n_conditions = len(conditions)
+    values = np.full((n_models, n_conditions), np.nan)
+    sems = np.full((n_models, n_conditions), np.nan)
+    for i, it in enumerate(items):
+        for j, cond in enumerate(conditions):
+            mean, sem = _paired_delta(it["standard_summary_df"], it["summary_df"], cond, metric)
+            values[i, j] = mean
+            sems[i, j] = sem
 
-    offsets = np.linspace(-(n_bars - 1) / 2, (n_bars - 1) / 2, n_bars) * bar_w
+    model_labels = [it["model_label"] for it in items]
+    fig_w = max(8.0, 3.0 + 0.22 * n_models * max(n_conditions, 1))
+    fig, ax = plt.subplots(figsize=(fig_w, 4.8))
 
-    bar_specs = [(COLOR_STANDARD, "Standard"), (COLOR_RESIDUAL, "Residualised")]
-    if has_permuted:
-        bar_specs.append((COLOR_PERMUTED, "Permuted control"))
+    x = np.arange(n_conditions)
+    total_width = 0.82
+    bar_w = min(0.16, total_width / max(n_models, 1))
+    offsets = (np.arange(n_models) - (n_models - 1) / 2.0) * bar_w
+    colors = [VLM_MODEL_PALETTE[i % len(VLM_MODEL_PALETTE)] for i in range(n_models)]
 
-    for bi, (color, label) in enumerate(bar_specs):
-        means, sems, pvals = [], [], []
-        for ci, cond in enumerate(conditions):
-            if bi == 0:
-                vals = _condition_means(standard_df, [cond], metric)[cond]
-            elif bi == 1:
-                vals = _condition_means(residual_df, [cond], metric)[cond]
-            else:
-                vals = _condition_means(residual_df, [f"permuted_{cond}"], metric)[
-                    f"permuted_{cond}"
-                ]
-
-            finite = vals[np.isfinite(vals)]
-            means.append(float(np.mean(finite)) if len(finite) else np.nan)
-            sems.append(float(np.std(finite) / np.sqrt(len(finite))) if len(finite) > 1 else 0.0)
-            pvals.append(_pvalue(vals))
-
-        means_arr = np.array(means)
-        sems_arr = np.array(sems)
-        bars = ax.bar(
-            x + offsets[bi],
-            means_arr,
-            width=bar_w,
-            color=color,
-            label=label,
-            yerr=sems_arr,
-            capsize=3,
-            error_kw={"linewidth": 0.8},
+    for i, label in enumerate(model_labels):
+        ax.bar(
+            x + offsets[i],
+            values[i],
+            width=bar_w * 0.95,
+            yerr=sems[i],
+            color=colors[i],
+            edgecolor="#4A4A4A",
+            linewidth=0.5,
+            alpha=0.9,
+            error_kw={"linewidth": 0.7},
+            capsize=2,
+            label=short_model_label(label),
             zorder=3,
         )
-
-        # Significance annotations above each bar
-        for xi, (bar, p) in enumerate(zip(bars, pvals)):
-            sig = significance_label(p)
-            if sig:
-                ax.text(
-                    bar.get_x() + bar.get_width() / 2,
-                    (bar.get_height() + sems_arr[xi]) * 1.02,
-                    sig,
-                    ha="center",
-                    va="bottom",
-                    fontsize=7,
-                    color="black",
-                )
 
     ax.axhline(0, color="black", linewidth=0.6, zorder=2)
-    ax.axhline(
-        1.0, color="grey", linewidth=0.7, linestyle="--", zorder=1, label="NC reference (1.0)"
-    )
-
     ax.set_xticks(x)
-    ax.set_xticklabels(
-        [CONDITION_LABELS.get(c, c) for c in conditions],
-        fontsize=9,
+    ax.set_xticklabels([CONDITION_LABELS.get(c, c) for c in conditions], fontsize=10 * font_scale)
+    ax.set_ylabel(
+        "Δ noise-ceiling-normalised r\n(residualised − standard)", fontsize=11 * font_scale
     )
-    ax.set_ylabel("Noise-ceiling-normalised r", fontsize=10)
-    ax.set_title("Structure residualisation: encoding accuracy comparison", fontsize=11)
-    ax.legend(fontsize=8, framealpha=0.8)
+    ax.set_title("Residualisation effect across models", fontsize=14 * font_scale, fontweight="bold")
+    ax.grid(axis="y", alpha=0.3, zorder=0)
     ax.spines[["top", "right"]].set_visible(False)
-    ax.grid(axis="y", alpha=0.25, zorder=0)
+    leg = ax.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.18),
+        ncol=int(min(max(n_models, 1), 5)),
+        fontsize=8 * font_scale,
+        frameon=False,
+    )
 
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    fig.savefig(output_path, dpi=300, bbox_inches="tight", bbox_extra_artists=(leg,))
     plt.close(fig)
-    logger.success(f"Residual encoding plot → {output_path}")
-
-
-def plot_ablation_delta(
-    standard_df: pd.DataFrame,
-    residual_df: pd.DataFrame,
-    *,
-    metric: str = METRIC,
-    output_path: Path,
-    show_permuted: bool = True,
-) -> None:
-    """Plot the change in encoding accuracy after residualisation (Δr/NC).
-
-    Positive values mean the residualised model performs *better* (unexpected);
-    negative values mean ablation reduced performance.  The key pattern:
-    cross-modal conditions should show a larger negative Δ than within-modal.
-    """
-    base_conditions = list(CONDITION_LABELS.keys())
-    std_conds = set(standard_df["condition"].unique())
-    res_conds = set(residual_df["condition"].unique())
-    conditions = [c for c in base_conditions if c in std_conds and c in res_conds]
-    permuted_conditions = [f"permuted_{c}" for c in conditions]
-    has_permuted = show_permuted and all(pc in res_conds for pc in permuted_conditions)
-
-    n_conds = len(conditions)
-    n_bars = 2 if has_permuted else 1
-    bar_w = 0.28
-    group_w = n_bars * bar_w + 0.10
-    x = np.arange(n_conds) * group_w
-    offsets = np.linspace(-(n_bars - 1) / 2, (n_bars - 1) / 2, n_bars) * bar_w
-
-    fig, ax = plt.subplots(figsize=(2.4 * n_conds, 4.0))
-
-    for bi, (color, desc, cond_list) in enumerate(
-        [
-            (COLOR_RESIDUAL, "Residualised − Standard", conditions),
-            *(
-                [(COLOR_PERMUTED, "Permuted − Standard", permuted_conditions)]
-                if has_permuted
-                else []
-            ),
-        ]
-    ):
-        deltas, sems = [], []
-        for cond, res_cond in zip(conditions, cond_list):
-            std_vals = _condition_means(standard_df, [cond], metric)[cond]
-            res_vals = _condition_means(residual_df, [res_cond], metric)[res_cond]
-            # Pair by subject order
-            n = min(len(std_vals), len(res_vals))
-            d = res_vals[:n] - std_vals[:n]
-            finite = d[np.isfinite(d)]
-            deltas.append(float(np.mean(finite)) if len(finite) else np.nan)
-            sems.append(float(np.std(finite) / np.sqrt(len(finite))) if len(finite) > 1 else 0.0)
-
-        deltas_arr = np.array(deltas)
-        sems_arr = np.array(sems)
-        ax.bar(
-            x + offsets[bi],
-            deltas_arr,
-            width=bar_w,
-            color=color,
-            label=desc,
-            yerr=sems_arr,
-            capsize=3,
-            error_kw={"linewidth": 0.8},
-            zorder=3,
-        )
-
-    ax.axhline(0, color="black", linewidth=0.8, zorder=2)
-    ax.set_xticks(x)
-    ax.set_xticklabels(
-        [CONDITION_LABELS.get(c, c) for c in conditions],
-        fontsize=9,
-    )
-    ax.set_ylabel("Δ noise-ceiling-normalised r", fontsize=10)
-    ax.set_title("Ablation effect: residualised minus standard encoding accuracy", fontsize=11)
-    ax.legend(fontsize=8, framealpha=0.8)
-    ax.spines[["top", "right"]].set_visible(False)
-    ax.grid(axis="y", alpha=0.25, zorder=0)
-
-    fig.tight_layout()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    logger.success(f"Ablation delta plot → {output_path}")
+    logger.success(f"Combined ablation delta plot → {output_path}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -280,38 +212,82 @@ def plot_ablation_delta(
     config_name="visualize_residual_encoding",
 )
 def main(cfg: DictConfig) -> None:
-    standard_path = Path(cfg.standard_summary)
-    residual_path = Path(cfg.residual_summary)
+    residual_root = Path(cfg.get("residual_root", "outputs/residual_encoding"))
+    if not residual_root.is_absolute():
+        residual_root = PROJ_ROOT / residual_root
+    encoding_root = Path(cfg.get("encoding_root", "outputs/neural_encoding"))
+    if not encoding_root.is_absolute():
+        encoding_root = PROJ_ROOT / encoding_root
     output_dir = Path(cfg.get("output_dir", str(FIGURES_DIR / "residual_encoding")))
     if not output_dir.is_absolute():
         output_dir = PROJ_ROOT / output_dir
     metric: str = cfg.get("metric", METRIC)
-    show_permuted: bool = bool(cfg.get("show_permuted", True))
 
-    if not standard_path.exists():
-        raise FileNotFoundError(f"standard_summary not found: {standard_path}")
-    if not residual_path.exists():
-        raise FileNotFoundError(f"residual_summary not found: {residual_path}")
+    if not residual_root.exists():
+        raise FileNotFoundError(f"residual_root does not exist: {residual_root}")
 
-    standard_df = _load_per_subject(standard_path)
-    residual_df = _load_per_subject(residual_path)
+    # Confirm the active font actually resolves to Lato (matplotlib falls back
+    # silently otherwise).
+    from matplotlib.font_manager import FontProperties, findfont
 
-    model_label = residual_path.parent.name
-    out_prefix = output_dir / model_label
+    lato_path = findfont(FontProperties(family="Lato"))
+    logger.info(f"'Lato' resolves to: {lato_path}")
+    if "lato" not in lato_path.lower():
+        logger.warning("Lato not resolved — matplotlib is falling back to another font.")
 
-    plot_residual_comparison(
-        standard_df,
-        residual_df,
+    entries = _collect_model_dirs(residual_root)
+    if not entries:
+        raise FileNotFoundError(
+            f"No residual model folders with aggregated.csv found under {residual_root}"
+        )
+
+    model_results: list[dict] = []
+    for entry in entries:
+        model_dir = entry["path"]
+        model_label = entry["model_label"]
+        summary_path = model_dir / "summary.csv"
+        std_path = _find_standard_summary(encoding_root, model_label)
+        if std_path is None:
+            logger.warning(
+                f"No standard summary for {model_label} under {encoding_root}; "
+                "it will appear in the bars figure but not the delta plot."
+            )
+        # Drop the permuted-control conditions; they are a baseline, not their own
+        # bars in the accuracy / delta figures.
+        model_results.append(
+            {
+                "aggregated_df": _drop_permuted_aggregated(load_aggregated(model_dir / "aggregated.csv")),
+                "summary_df": _drop_permuted_summary(
+                    load_summary(summary_path) if summary_path.exists() else None
+                ),
+                "standard_summary_df": load_summary(std_path) if std_path else None,
+                "model_label": model_label,
+                "model_dir": None,  # no permutation nulls → sign-flip significance
+            }
+        )
+
+    logger.info(f"Loaded {len(model_results)} residual model(s) from {residual_root}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1) Grouped model-comparison bars (one bar per model per condition) — the
+    #    same figure the main neural-encoding pipeline uses to compare models.
+    plot_grouped_model_means(
+        model_results,
         metric=metric,
-        output_path=out_prefix / "residual_comparison.png",
-        show_permuted=show_permuted,
+        alpha=0.05,
+        font_scale=1.15,
+        compress_normalized_axis=False,
+        normalized_axis_linthresh=0.08,
+        output_path=output_dir / "residual_encoding_bars.png",
+        figsize=(8, 5),
+        y_limits=None,
     )
-    plot_ablation_delta(
-        standard_df,
-        residual_df,
+
+    # 2) One combined delta figure across all models.
+    plot_combined_delta(
+        model_results,
         metric=metric,
-        output_path=out_prefix / "ablation_delta.png",
-        show_permuted=show_permuted,
+        output_path=output_dir / "ablation_delta.png",
     )
 
 

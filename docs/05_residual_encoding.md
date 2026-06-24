@@ -130,9 +130,10 @@ python -m cross_modal_neural_encoding.visualization.visualize_residual_encoding 
     residual_summary=outputs/residual_encoding/<model>/summary.csv
 ```
 
-Produces two figures:
+Run this after the main neural-encoding visualisation; it reads the standard and
+residual `summary.csv` files and produces two figures:
 
 | Figure | Description |
 | --- | --- |
-| `residual_comparison.png` | Grouped bars: standard / residualised / permuted per condition |
-| `ablation_delta.png` | Δ(residualised − standard) per condition, highlighting the asymmetric drop |
+| `residual_encoding_bars.png` | Residualised encoding accuracy in the **same** per-model bar-plot format as the main neural-encoding figure (reuses `plot_encoding_results`), so the two are directly comparable |
+| `ablation_delta.png` | One bar per condition, `residualised − standard`, so a drop is a downward (negative) bar; conditions are grouped by embedding modality (within then cross), with the permuted control overlaid as points near zero |
