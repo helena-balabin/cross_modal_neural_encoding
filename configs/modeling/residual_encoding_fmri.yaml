@@ -1,0 +1,17 @@
+# ──────────────────────────────────────────────────────────────
+# fMRI-side residual neural encoding analysis.
+# Thin override of residual_encoding.yaml: residualise the fMRI
+# response (Ỹ = Y − V*·r) against the other modality's embedding
+# instead of the embedding (ẽ = e − W*·r), e.g. image fMRI minus
+# image fMRI predicted from text embeddings.
+#
+# Run with:
+#   python -m cross_modal_neural_encoding.modeling.residual_encoding \
+#       --config-name residual_encoding_fmri
+# ──────────────────────────────────────────────────────────────
+defaults:
+  - residual_encoding
+  - _self_
+
+residual_side: "fmri"
+output_dir: "outputs/residual_encoding_fmri"

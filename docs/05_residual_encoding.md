@@ -61,6 +61,36 @@ The residualised embedding **ẽ** = **e** − **ê** retains only the component
 modality-private information. W\* is applied to the test split using the
 training-split fit only — no test information leaks into the residualisation step.
 
+### Residualisation side: embedding vs fMRI
+
+The `residual_side` config flag selects *which* side of the encoding is
+residualised against the other modality's embedding **r**:
+
+| `residual_side` | Residualised quantity | Interpretation |
+| --- | --- | --- |
+| `embedding` (default) | **ẽ** = **e** − W\*·**r** | remove the part of the *embedding* predictable from the other modality |
+| `fmri` | **Ỹ** = **Y** − V\*·**r** | remove the part of the *fMRI* predictable from the other modality, e.g. *image fMRI − image fMRI predicted from text embeddings* |
+
+The mechanics are identical — a ridge regression fit on the training split only
+(`Ridge(alpha=residual_alpha)`), applied to both train and test — only the
+regression *target* changes (the embedding **e** vs the fMRI **Y**). For the
+fMRI-side variant V\* is fit from **r** to the multi-voxel fMRI, and the residual
+**Ỹ** replaces **Y** as the encoding target while the embedding **e** is encoded
+unchanged. Both variants run across all four conditions of the 2×2 design.
+
+> **Noise-ceiling caveat.** The noise ceiling is always computed on the original
+> betas. For the fMRI-side variant, `mean_normalized_r` therefore normalises the
+> encoding of *residualised* Y by the *original* noise ceiling — the same
+> convention as the embedding-side variant, kept for comparability.
+
+The fMRI-side variant is run via a thin override config that only changes
+`residual_side` and `output_dir`:
+
+```bash
+python -m cross_modal_neural_encoding.modeling.residual_encoding \
+    --config-name residual_encoding_fmri
+```
+
 ### Full pipeline re-run
 
 The full [encoding pipeline](04_neural_encoding.md) is re-run with **ẽ** in
@@ -112,13 +142,16 @@ Two caveats:
 
 ## Outputs
 
-Results are written to `outputs/residual_encoding/<model>/`. The directory layout
+Results are written to `outputs/residual_encoding/<model>/` (embedding-side) or
+`outputs/residual_encoding_fmri/<model>/` (fMRI-side). The directory layout
 and file set mirror the [standard encoding outputs](04_neural_encoding.md#outputs)
 (`per_voxel_r.npy`, `noise_ceiling.npy`, `voxel_keep.npy`,
 `best_frac_per_voxel.npy`, NIfTIs, plus top-level `summary.csv` / `aggregated.csv`),
 so the two analyses are directly comparable. Condition names for the residual runs
 use the original condition labels (e.g. `text_to_image`); permuted-control
-conditions are prefixed `permuted_` (e.g. `permuted_text_to_image`).
+conditions are prefixed `permuted_` (e.g. `permuted_text_to_image`). Both
+`residual_side` variants share the same labels and schema, differing only in the
+output directory.
 
 ---
 
@@ -128,6 +161,13 @@ conditions are prefixed `permuted_` (e.g. `permuted_text_to_image`).
 python -m cross_modal_neural_encoding.visualization.visualize_residual_encoding \
     standard_summary=outputs/neural_encoding/<model>/summary.csv \
     residual_summary=outputs/residual_encoding/<model>/summary.csv
+```
+
+For the fMRI-side variant, point it at the fMRI-side outputs:
+
+```bash
+python -m cross_modal_neural_encoding.visualization.visualize_residual_encoding \
+    --config-name visualize_residual_encoding_fmri
 ```
 
 Run this after the main neural-encoding visualisation; it reads the standard and

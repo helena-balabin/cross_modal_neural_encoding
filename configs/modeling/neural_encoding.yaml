@@ -59,7 +59,7 @@ frac_grid: [0.1, 0.25, 0.5, 0.75, 1.0]
 # Number of permutations (shuffle embedding <-> stimulus mapping).
 # Set to 0 to skip.  100 gives a rough estimate; 1000+ for
 # publication-quality p-values.
-n_permutations: 100
+n_permutations: 1000
 # Parallel workers for permutations.
 # - Set >0 to force an exact worker count.
 # - Set 0 to auto-detect from CPU allocation and reserve some cores.

@@ -34,6 +34,12 @@ output_dir: "outputs/residual_encoding"
 # cross-modally shared component.
 # Ridge α for the other-modality → embedding regression.
 residual_alpha: 1.0
+# Which side is residualised against the other modality's embedding r:
+#   "embedding" → ẽ = e − W*·r  (remove shared part of the embedding)
+#   "fmri"      → Ỹ = Y − V*·r  (remove shared part of the fMRI, e.g.
+#                                image fMRI − image fMRI predicted from text).
+# See configs/modeling/residual_encoding_fmri.yaml for the fMRI-side run.
+residual_side: "embedding"
 # Also run with the residual features permuted across stimuli as a control.
 run_permuted_control: true
 

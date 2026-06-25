@@ -367,6 +367,7 @@ def run_encoding(
     average_test_by_group: bool = True,
     residual_features: np.ndarray | None = None,
     residual_alpha: float = 1.0,
+    residual_side: str = "embedding",
     verbose: bool = True,
 ) -> dict:
     """Ridge encoding with nested group-aware CV.
@@ -401,13 +402,22 @@ def run_encoding(
         stimulus before scoring.
     residual_features : optional (n_samples, n_residual_features) regressors
         aligned to trials — typically the *other* modality's embeddings.
-        When provided, a ridge regression W* is fit on the training split to
-        predict each embedding dimension from these features, and the residual
-        **ẽ** = **e** − W***r** replaces **e** before the encoding model is
-        fit.  This removes the cross-modally predictable (shared) component,
-        leaving only modality-private information.
+        When provided, a ridge regression is fit on the training split to
+        predict the *target of residualisation* from these features, and the
+        residual replaces that target before the encoding model is fit.  This
+        removes the cross-modally predictable (shared) component, leaving only
+        modality-private information.  Which side is residualised is controlled
+        by ``residual_side``.
     residual_alpha : ridge regularisation strength for the residual-feature
-        → **e** regression (default 1.0).
+        regression (default 1.0).
+    residual_side : ``"embedding"`` (default) residualises the embeddings
+        **ẽ** = **e** − W***r** (W* fit on r → e); ``"fmri"`` residualises the
+        fMRI responses **Ỹ** = **Y** − V***r** (V* fit on r → Y), e.g. *image
+        fMRI − image fMRI predicted from text embeddings*.  Only used when
+        ``residual_features`` is provided.  Note: for the ``"fmri"`` variant
+        ``noise_ceiling`` is still computed on the original betas, so
+        ``mean_normalized_r`` normalises the encoding of *residualised* Y by the
+        *original* noise ceiling (parallel to the embedding-side variant).
 
     Returns
     -------
@@ -416,6 +426,11 @@ def run_encoding(
     ``normalized_per_voxel_r``, ``mean_normalized_r``,
     ``mean_noise_ceiling_r``.
     """
+    if residual_side not in {"embedding", "fmri"}:
+        raise ValueError(
+            f"residual_side must be 'embedding' or 'fmri', got {residual_side!r}"
+        )
+
     X = X.astype("float32")
     Y = Y.astype("float32")
 
@@ -458,16 +473,23 @@ def run_encoding(
         X_test = scaler.transform(X_test)
 
         # ---- 4b. Cross-modal residualization ---------------------------
-        # Fit W* on training split only, then subtract the linear contribution
-        # of the residual features (the other modality's embeddings) from both
-        # train and test embeddings, removing the cross-modally shared part.
+        # Fit a ridge regression on the training split only, then subtract the
+        # linear contribution of the residual features (the other modality's
+        # embeddings) from both train and test, removing the cross-modally
+        # shared part.  ``residual_side`` selects whether the embeddings
+        # (ẽ = e − W*·r) or the fMRI responses (Ỹ = Y − V*·r) are residualised.
         if residual_features is not None:
             r_train = residual_features[train_idx].astype("float32")
             r_test = residual_features[test_idx].astype("float32")
             resid_model = Ridge(alpha=residual_alpha, fit_intercept=True)
-            resid_model.fit(r_train, X_train)
-            X_train = X_train - resid_model.predict(r_train)
-            X_test = X_test - resid_model.predict(r_test)
+            if residual_side == "embedding":
+                resid_model.fit(r_train, X_train)
+                X_train = X_train - resid_model.predict(r_train)
+                X_test = X_test - resid_model.predict(r_test)
+            else:  # residual_side == "fmri"
+                resid_model.fit(r_train, Y_train)
+                Y_train = Y_train - resid_model.predict(r_train)
+                Y_test = Y_test - resid_model.predict(r_test)
 
         cv_scores = np.zeros((n_fracs, n_voxels), dtype=np.float64)
         for tr_idx, val_idx in inner_splits:

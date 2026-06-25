@@ -1,0 +1,23 @@
+# ──────────────────────────────────────────────────────────────
+# Configuration for fMRI-side residual encoding visualization.
+# Same figures as visualize_residual_encoding.yaml, but pointed at
+# the fMRI-side outputs (Ỹ = Y − V*·r).
+# See: cross_modal_neural_encoding/visualization/visualize_residual_encoding.py
+#
+# Run with:
+#   python -m cross_modal_neural_encoding.visualization.visualize_residual_encoding \
+#       --config-name visualize_residual_encoding_fmri
+# ──────────────────────────────────────────────────────────────
+
+# Root holding the fMRI-side residual outputs (<model>/{summary,aggregated}.csv).
+residual_root: "outputs/residual_encoding_fmri"
+
+# Root holding the standard neural-encoding outputs, searched per model for
+# the matching <model>/summary.csv (used for the residualised − standard delta).
+encoding_root: "outputs/neural_encoding"
+
+# Metric column from the summary CSV to plot.
+metric: "mean_normalized_r"
+
+# Output directory for the two combined figures.
+output_dir: "reports/figures/residual_encoding_fmri"

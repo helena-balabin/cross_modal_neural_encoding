@@ -1,17 +1,21 @@
-"""Residual neural encoding: cross-modal ablation of VLM embeddings.
+"""Residual neural encoding: cross-modal ablation via the other modality.
 
-For each encoding condition in the 2×2 cross-modal design, a ridge
-regression W* is fit on the training split to predict each embedding
-dimension from the *other* modality's embedding **r** (the linear
-text→vision / vision→text mapping).  The residualised embedding
-**ẽ** = **e** − W***r** removes the cross-modally predictable (shared)
-component and is then used in the full encoding pipeline in place of **e**:
+For each encoding condition in the 2×2 cross-modal design, a ridge regression
+is fit on the training split to predict the *target of residualisation* from
+the *other* modality's embedding **r** (the linear text→vision / vision→text
+mapping), and the residual replaces that target in the full encoding pipeline.
+``residual_side`` selects which side is residualised:
 
-    - text embeddings   → remove the part predictable from vision embeddings
-    - vision embeddings → remove the part predictable from text embeddings
+    - ``"embedding"`` (default): **ẽ** = **e** − W***r** removes the part of the
+      embedding predictable from the other modality's embedding.
+          * text embeddings   → remove the part predictable from vision embeddings
+          * vision embeddings → remove the part predictable from text embeddings
+    - ``"fmri"``: **Ỹ** = **Y** − V***r** removes the part of the fMRI response
+      predictable from the other modality's embedding, e.g. *image fMRI −
+      image fMRI predicted from text embeddings*.
 
-What remains is modality-*private* information.  A selective drop in
-cross-modal but not within-modality encoding accuracy after residualisation
+In both cases what remains is modality-*private* information.  A selective drop
+in cross-modal but not within-modality encoding accuracy after residualisation
 constitutes evidence that cross-modally shared representational content is
 the principal carrier of cross-modal brain alignment.
 
@@ -94,6 +98,11 @@ def main(cfg: DictConfig) -> None:
         dtype="float32",
     )
     residual_alpha: float = float(cfg.get("residual_alpha", 1.0))
+    residual_side: str = str(cfg.get("residual_side", "embedding"))
+    if residual_side not in {"embedding", "fmri"}:
+        raise ValueError(
+            f"residual_side must be 'embedding' or 'fmri', got {residual_side!r}"
+        )
     run_permuted_control: bool = bool(cfg.get("run_permuted_control", True))
     conditions: dict = OmegaConf.to_container(cfg.conditions, resolve=True)  # type: ignore[assignment]
 
@@ -202,7 +211,8 @@ def main(cfg: DictConfig) -> None:
             for label, r_input in variants:
                 logger.info(
                     f"  {'[permuted] ' if 'permuted' in label else ''}"
-                    f"{emod} embed → {fmod} fMRI (residualised)"
+                    f"{emod} embed → {fmod} fMRI "
+                    f"({residual_side}-side residualised)"
                 )
                 result = run_encoding(
                     X,
@@ -216,6 +226,7 @@ def main(cfg: DictConfig) -> None:
                     average_test_by_group=True,
                     residual_features=r_input,
                     residual_alpha=residual_alpha,
+                    residual_side=residual_side,
                 )
                 if "mean_normalized_r" in result:
                     logger.info(
