@@ -416,6 +416,11 @@ def main(cfg: DictConfig) -> None:
 
     # 1) Grouped model-comparison bars (one bar per model per condition) — the
     #    same figure the main neural-encoding pipeline uses to compare models.
+    #    Match the width of the delta plot below. The delta uses tight_layout
+    #    (axes fills ~0.88 of the figure) while the grouped bars do not (~0.78),
+    #    so widen the bars figure by ~1.13× the delta's width to land at the same
+    #    rendered width.
+    delta_w = max(8.0, 3.0 + 0.22 * len(model_results) * 4)
     plot_grouped_model_means(
         model_results,
         metric=metric,
@@ -424,7 +429,7 @@ def main(cfg: DictConfig) -> None:
         compress_normalized_axis=False,
         normalized_axis_linthresh=0.08,
         output_path=output_dir / "residual_encoding_bars.png",
-        figsize=(8, 6.4),
+        figsize=(1.13 * delta_w, 6.4),
         y_limits=None,
         title=f"{title_prefix}\nResidual encoding accuracy (group means)",
         condition_labels=residual_labels,
