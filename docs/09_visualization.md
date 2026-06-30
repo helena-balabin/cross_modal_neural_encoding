@@ -1,5 +1,17 @@
 # Visualization
 
+## Color scheme
+
+Color encodes **modality** consistently across the figures: **text = blue**
+(`#7EAEDB`), **image/vision = red** (`#E88989`), and **VLMs / cross-modal = purple**
+(`#A988C8`) — visually the blue + red mix. **Green** (`#84C895`) is reserved for the
+fMRI/brain space in the overview schematic. Consequently the model-family bar
+palettes carry modality meaning (`VLM_MODEL_PALETTE` = purple, `VISION_MODEL_PALETTE`
+= red, `TEXT_MODEL_PALETTE` = blue in `visualize_encoding_results.py`), the
+predict-modality heatmaps are colored by input modality (Text→Vision blue,
+Vision→Text red), and the difference map uses a colorblind-safe amber↔purple
+diverging scale.
+
 ## Noise Ceiling Surface Maps
 
 **Script:** `cross_modal_neural_encoding/visualization/visualize_noise_ceiling.py`
@@ -53,6 +65,7 @@ A 4-row × N-column subplot grid (where N = number of thresholds):
 - Bar height = group mean of per-subject mean r (or r_norm)
 - Error bars = standard deviation across subjects
 - Significance stars from either group-level sign-flip (if `use_group_level_significance=true`) or `p_value_col` in `aggregated.csv`
+- Pairwise significance brackets between the four conditions, from a two-sided Wilcoxon signed-rank test (`scipy.stats.wilcoxon`) on the per-model means paired by model, BH-FDR corrected across the six condition pairs (distinct from the per-bar vs.-chance stars)
 
 ### Per-Subject Panel (optional)
 

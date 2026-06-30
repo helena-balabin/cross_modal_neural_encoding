@@ -36,7 +36,7 @@ Config: `configs/modeling/residual_encoding.yaml`
 
 Each stimulus has both a text embedding and an image embedding (PCA-reduced, the
 same reduction used in the standard encoding pipeline). For each condition, the
-embedding being encoded is residualised against the **other** modality's
+embedding being encoded is residualized against the **other** modality's
 embedding for the same stimulus — exactly the linear text→vision / vision→text
 mapping used in [Predict Modalities](10_predict_modalities.md):
 
@@ -45,7 +45,7 @@ mapping used in [Predict Modalities](10_predict_modalities.md):
 | text | image embedding | image-derivable (shared) part of text |
 | vision (image) | text embedding | text-derivable (shared) part of image |
 
-### Residualisation
+### Residualization
 
 On the **training split** of each outer CV fold, we fit a ridge regression
 **W\*** from the residual feature **r** (the paired other-modality embedding) to
@@ -56,17 +56,17 @@ $$\hat{\mathbf{e}} = \mathbf{W}^* \mathbf{r}, \quad
 \|\mathbf{e}_\text{train} - \mathbf{W}\mathbf{r}_\text{train}\|^2_F
 + \lambda \|\mathbf{W}\|^2_F$$
 
-The residualised embedding **ẽ** = **e** − **ê** retains only the components of
+The residualized embedding **ẽ** = **e** − **ê** retains only the components of
 **e** that **cannot** be linearly predicted from the other modality — i.e., the
 modality-private information. W\* is applied to the test split using the
-training-split fit only — no test information leaks into the residualisation step.
+training-split fit only — no test information leaks into the residualization step.
 
-### Residualisation side: embedding vs fMRI
+### Residualization side: embedding vs fMRI
 
 The `residual_side` config flag selects *which* side of the encoding is
-residualised against the other modality's embedding **r**:
+residualized against the other modality's embedding **r**:
 
-| `residual_side` | Residualised quantity | Interpretation |
+| `residual_side` | Residualized quantity | Interpretation |
 | --- | --- | --- |
 | `embedding` (default) | **ẽ** = **e** − W\*·**r** | remove the part of the *embedding* predictable from the other modality |
 | `fmri` | **Ỹ** = **Y** − V\*·**r** | remove the part of the *fMRI* predictable from the other modality, e.g. *image fMRI − image fMRI predicted from text embeddings* |
@@ -80,7 +80,7 @@ unchanged. Both variants run across all four conditions of the 2×2 design.
 
 > **Noise-ceiling caveat.** The noise ceiling is always computed on the original
 > betas. For the fMRI-side variant, `mean_normalized_r` therefore normalises the
-> encoding of *residualised* Y by the *original* noise ceiling — the same
+> encoding of *residualized* Y by the *original* noise ceiling — the same
 > convention as the embedding-side variant, kept for comparability.
 
 The fMRI-side variant is run via a thin override config that only changes
@@ -102,17 +102,17 @@ image→image, image→text, text→image).
 As a control, an additional run permutes the residual feature **r** across stimuli
 before fitting **W\***. A stimulus-misaligned **r** carries no cross-modal signal,
 so **W\*** collapses toward the mean and little stimulus-specific variance is
-removed. This isolates accuracy changes caused by the residualisation *procedure*
+removed. This isolates accuracy changes caused by the residualization *procedure*
 itself (fitting and subtracting a regressor at all) from those caused by removing
 genuine cross-modal information. Note it does **not** match the *amount* of
-variance removed by the real residualisation — that confound is handled instead by
+variance removed by the real residualization — that confound is handled instead by
 the within-row design in the hypothesis below.
 
 ---
 
 ## Hypothesis
 
-Residualisation is determined by the **embedding** modality alone (text loses its
+Residualization is determined by the **embedding** modality alone (text loses its
 vision-predictable part; vision loses its text-predictable part), so the two
 conditions that share an embedding modality undergo the *identical* ablation and
 differ only in their fMRI target. The test is therefore a within-row comparison of
@@ -123,7 +123,7 @@ the encoding drop on the cross-modal vs the within-modality target:
 | text | text → text | text → image | larger drop for text → image |
 | vision | image → image | image → text | larger drop for image → text |
 
-Because the same residualised embedding feeds both conditions in a row, the
+Because the same residualized embedding feeds both conditions in a row, the
 *amount* of information removed is held constant by construction — a selectively
 larger drop on the cross-modal target cannot be explained by "too much variance
 was removed," only by the removed shared component mattering specifically for
@@ -134,7 +134,7 @@ Two caveats:
 
 - **Floor effect.** `image → text` is already near chance, so its drop is bounded;
   the informative signal is expected mainly in the text row (`text → image`).
-- **Permuted control.** As above, it controls for artifacts of the residualisation
+- **Permuted control.** As above, it controls for artifacts of the residualization
   procedure, not for the magnitude of variance removed — the within-row design is
   what controls for magnitude.
 
@@ -175,5 +175,7 @@ residual `summary.csv` files and produces two figures:
 
 | Figure | Description |
 | --- | --- |
-| `residual_encoding_bars.png` | Residualised encoding accuracy in the **same** per-model bar-plot format as the main neural-encoding figure (reuses `plot_encoding_results`), so the two are directly comparable |
-| `ablation_delta.png` | One bar per condition, `residualised − standard`, so a drop is a downward (negative) bar; conditions are grouped by embedding modality (within then cross), with the permuted control overlaid as points near zero |
+| `residual_encoding_bars.png` | Residualized encoding accuracy in the **same** per-model bar-plot format as the main neural-encoding figure (reuses `plot_encoding_results`), so the two are directly comparable |
+| `ablation_delta.png` | One bar per condition, the residualization effect as a **percentage** of the original encoding performance (`(residualized − standard) / standard × 100`, using the group-mean original as the denominator), so a drop is a downward (negative) bar; conditions are grouped by embedding modality (within then cross) |
+
+Both figures also carry **pairwise significance brackets** between the four conditions, from a two-sided Wilcoxon signed-rank test (`scipy.stats.wilcoxon`) on the per-model means paired by model, BH-FDR corrected across the six condition pairs (one bracket level per pair). These are distinct from the per-bar `*`/`ns` stars, which test each bar against chance.

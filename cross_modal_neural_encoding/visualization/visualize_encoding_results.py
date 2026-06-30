@@ -16,7 +16,8 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, cast
+import warnings
 
 import hydra
 from loguru import logger
@@ -26,6 +27,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from omegaconf import DictConfig
 import pandas as pd
+from scipy.stats import wilcoxon
 
 from cross_modal_neural_encoding.config import FIGURES_DIR, PROJ_ROOT
 from cross_modal_neural_encoding.utils import (
@@ -53,7 +55,19 @@ SUBJECT_PALETTE = [
     "#E39DC1",  # darker pastel pink   — sub-08
     "#93C8C8",  # darker pastel teal   — sub-09
 ]
+# Color encodes modality across the paper: text = blue, image = red, and VLMs
+# (cross-modal) = purple — visually the blue+red mix. Each model family therefore
+# takes the hue of its modality (green is reserved for the fMRI/brain space in
+# the overview schematic).
 VLM_MODEL_PALETTE = [
+    "#C3A1D6",  # lavender
+    "#A988C8",  # soft purple
+    "#906EBA",  # muted violet
+    "#D0B4E6",  # light lilac
+    "#B39AD8",  # pale purple
+    "#9B7CCF",  # medium purple
+]
+VISION_MODEL_PALETTE = [
     "#F5A3A3",  # soft red
     "#E88989",  # dusty red
     "#D96F6F",  # muted crimson
@@ -61,21 +75,13 @@ VLM_MODEL_PALETTE = [
     "#F7B7B2",  # salmon
     "#E39DC1",  # pink-rose
 ]
-VISION_MODEL_PALETTE = [
-    "#C3A1D6",  # warm lavender
-    "#A988C8",  # warm soft purple
-    "#906EBA",  # muted warm violet
-    "#D0B4E6",  # light warm lilac
-    "#B39AD8",  # warm pale purple
-    "#9B7CCF",  # warm medium purple
-]
 TEXT_MODEL_PALETTE = [
-    "#F2D07B",  # ochre
-    "#E8C05A",  # warm yellow
-    "#D9AE3F",  # goldenrod
-    "#F4D58D",  # pale ochre
-    "#EFBF63",  # amber
-    "#F7D08A",  # soft yellow
+    "#9CC4DD",  # soft blue
+    "#7EAEDB",  # pastel blue
+    "#6F9FC9",  # muted blue
+    "#B7D9EC",  # light sky blue
+    "#8FBFD4",  # steel blue
+    "#A3D2E2",  # pale aqua
 ]
 COLD_SUBJECT_PALETTE = [
     "#A8C8E8",  # cold pastel blue
@@ -367,6 +373,112 @@ def _group_level_pvalues(
             )
         pvals.append(p)
     return np.asarray(pvals, dtype=float)
+
+
+def pairwise_condition_signrank(
+    values: np.ndarray,
+    *,
+    correction: str = "fdr_bh",
+) -> dict[tuple[int, int], float]:
+    """Pairwise Wilcoxon signed-rank tests between conditions.
+
+    ``values`` is the ``(n_models, n_conditions)`` matrix of per-model means that
+    are actually drawn as bars. The same model contributes to every condition, so
+    the conditions are *paired* by model: for each pair ``j < k`` the test runs on
+    the per-model differences over the models with a finite value in both
+    conditions (two-sided ``scipy.stats.wilcoxon``). Returns ``{(j, k): q}`` for
+    every pair, BH-FDR corrected across the family when ``correction == "fdr_bh"``.
+    Pairs with fewer than two paired models, or with no non-zero difference
+    (``wilcoxon`` is undefined), are returned as ``NaN``.
+
+    The exact signed-rank distribution is used (``method="exact"``) so the p-value
+    depends only on the signs/ranks and not on whether scipy would otherwise fall
+    back to the normal approximation when the absolute differences contain ties.
+    """
+    n_conditions = values.shape[1]
+    pairs = [(j, k) for j in range(n_conditions) for k in range(j + 1, n_conditions)]
+    raw = np.full(len(pairs), np.nan, dtype=float)
+    for idx, (j, k) in enumerate(pairs):
+        paired = np.isfinite(values[:, j]) & np.isfinite(values[:, k])
+        a = values[paired, j]
+        b = values[paired, k]
+        if len(a) < 2 or np.allclose(a, b):
+            continue
+        try:
+            with warnings.catch_warnings():
+                # We deliberately force the exact distribution; ignore scipy's
+                # note that ties in the absolute differences make it approximate.
+                warnings.simplefilter("ignore")
+                result = wilcoxon(a, b, method="exact")
+        except ValueError:
+            # e.g. every paired difference is zero after dropping ties.
+            continue
+        # scipy's stubs type the result as a bare tuple, so pull the p-value by
+        # index and cast it to keep the type checker happy.
+        raw[idx] = float(cast(float, result[1]))
+    q = benjamini_hochberg(raw) if correction == "fdr_bh" else raw
+    return {pair: q[idx] for idx, pair in enumerate(pairs)}
+
+
+def annotate_pairwise_brackets(
+    ax,
+    *,
+    x_positions: np.ndarray,
+    values: np.ndarray,
+    pair_qvalues: dict[tuple[int, int], float],
+    alpha: float,
+    font_scale: float,
+) -> None:
+    """Draw significance brackets for pairwise condition comparisons.
+
+    Each pair gets its own level so every bracket reads as a single comparison
+    (shared levels would let adjacent brackets' ticks merge into one apparent
+    bracket). Shorter spans sit on lower levels, giving a nested-pyramid look with
+    the longest span on top. Significant pairs get stars, the rest an ``ns`` label;
+    pairs whose test could not be run (``NaN``) are skipped. The y-limit is
+    extended so the brackets fit.
+    """
+    pairs = [p for p, q in pair_qvalues.items() if np.isfinite(q)]
+    if not pairs:
+        return
+    # One bracket per level; shorter spans below longer ones, left-to-right.
+    pairs.sort(key=lambda p: (p[1] - p[0], p[0]))
+    pair_level = {pair: lvl for lvl, pair in enumerate(pairs)}
+
+    y0, y1 = ax.get_ylim()
+    span = y1 - y0
+    # Reference top: highest bar extent — bars rise to their max value, or to 0
+    # when every bar is negative (as in the % delta plot).
+    top = max(float(np.nanmax(values)), 0.0)
+    base = top + 0.06 * span
+    step = 0.07 * span
+    tick = 0.012 * span
+
+    highest = base
+    for (j, k), lvl in pair_level.items():
+        y = base + lvl * step
+        highest = max(highest, y)
+        x_j, x_k = float(x_positions[j]), float(x_positions[k])
+        ax.plot(
+            [x_j, x_j, x_k, x_k],
+            [y - tick, y, y, y - tick],
+            color="#333333",
+            linewidth=0.8,
+            zorder=6,
+        )
+        sig = significance_label(float(pair_qvalues[(j, k)]), alpha)
+        ax.text(
+            (x_j + x_k) / 2.0,
+            y + 0.005 * span,
+            sig,
+            ha="center",
+            va="bottom",
+            fontsize=8.0 * font_scale,
+            color="#333333" if sig == "ns" else "darkred",
+            fontweight="normal" if sig == "ns" else "bold",
+            zorder=6,
+        )
+    ax.set_ylim(y0, max(y1, highest + 0.06 * span))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -721,6 +833,8 @@ def plot_grouped_model_means(
     group_sig_permutations: int = 10000,
     group_sig_random_state: int = 42,
     group_sig_correction: str = "fdr_bh",
+    title: str = "Model Comparison Based on Group Means",
+    condition_labels: dict[str, str] | None = None,
 ) -> None:
     """Plot grouped bars comparing model means across conditions.
 
@@ -748,7 +862,8 @@ def plot_grouped_model_means(
         return
 
     conditions = _condition_order_from_index(all_conditions)
-    labels = [CONDITION_LABELS.get(c, c) for c in conditions]
+    label_map = condition_labels if condition_labels is not None else CONDITION_LABELS
+    labels = [label_map.get(c, c) for c in conditions]
 
     model_labels = [item["model_label"] for item in model_results]
     n_models = len(model_labels)
@@ -896,7 +1011,7 @@ def plot_grouped_model_means(
     else:
         ax.set_ylabel("Pearson correlation", fontsize=11.5 * font_scale)
     ax.set_title(
-        "Model Comparison Based on Group Means",
+        title,
         fontsize=15 * font_scale,
         fontweight="bold",
     )
@@ -913,23 +1028,28 @@ def plot_grouped_model_means(
     )
     ax.add_artist(model_legend)
 
-    # Second legend explaining the significance stars (vs. chance).
+    # Second legend explaining the significance stars. The same star scheme is
+    # used for two tests, so spell out which is which: per-bar stars test each
+    # bar against chance; the brackets test pairs of conditions (signed-rank).
     stat_sym = "q" if group_sig_correction == "fdr_bh" else "p"
     sig_entries = [
         ("***", f"{stat_sym} < 0.001"),
         ("**", f"{stat_sym} < 0.01"),
         ("*", f"{stat_sym} < {alpha:g}"),
         ("ns", "not significant"),
+        ("", "bars: vs. chance"),
+        ("", "brackets: pairwise (signed-rank)"),
     ]
     sig_handles = [Line2D([], [], linestyle="none") for _ in sig_entries]
-    sig_labels = [f"{stars}  {desc}" for stars, desc in sig_entries]
-    sig_title = "Significance vs. chance"
+    sig_labels = [(f"{stars}  {desc}" if stars else desc) for stars, desc in sig_entries]
+    sig_title = "Significance"
     if group_sig_correction == "fdr_bh":
         sig_title += "\n(BH-FDR corrected)"
     sig_legend = ax.legend(
         sig_handles,
         sig_labels,
-        loc="upper right",
+        loc="upper left",
+        bbox_to_anchor=(1.01, 1.0),
         fontsize=8.5 * font_scale,
         title=sig_title,
         title_fontsize=8.5 * font_scale,
@@ -951,6 +1071,20 @@ def plot_grouped_model_means(
         )
 
     ax.set_ylim(y_min, y_max)
+
+    # Pairwise Wilcoxon signed-rank tests between the condition groups (per-model
+    # means, paired by model), drawn as nested significance brackets above the
+    # bars. Bracket offsets are linear, so skip them on a compressed (symlog) axis.
+    if not (is_normalized_metric and compress_normalized_axis):
+        pair_q = pairwise_condition_signrank(values, correction=group_sig_correction)
+        annotate_pairwise_brackets(
+            ax,
+            x_positions=x,
+            values=values,
+            pair_qvalues=pair_q,
+            alpha=alpha,
+            font_scale=font_scale,
+        )
 
     if output_path is None:
         output_path = FIGURES_DIR / "encoding_results_models_grouped.png"

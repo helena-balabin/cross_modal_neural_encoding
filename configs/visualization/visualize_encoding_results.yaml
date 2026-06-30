@@ -58,8 +58,10 @@ plot_per_model_rows: false
 # Grouped model-comparison plot (one panel)
 plot_grouped_models: true
 grouped_output_path: null
-# Width auto-expands with the number of models; this is the minimum.
-grouped_figsize: [12, 3.8]
+# Width auto-expands with the number of models; this is the minimum. Height
+# leaves room for the per-condition pairwise significance brackets (one level
+# per pair) drawn above the bars.
+grouped_figsize: [12, 5.4]
 
 # Supplementary per-subject plot (mean across models)
 plot_subject_mean_across_models: true
@@ -77,7 +79,7 @@ y_limits: [-0.02, 0.25]
 show_subject_panel: true
 
 # ── Text sizing (multiplier over base plot fonts) ─────────────
-font_scale: 1.4
+font_scale: 1.55
 
 # ── Compress normalized y-axis to reduce empty middle space ───
 # Uses symlog scaling when metric contains "normalized".

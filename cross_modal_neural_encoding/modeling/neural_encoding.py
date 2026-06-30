@@ -403,20 +403,20 @@ def run_encoding(
     residual_features : optional (n_samples, n_residual_features) regressors
         aligned to trials — typically the *other* modality's embeddings.
         When provided, a ridge regression is fit on the training split to
-        predict the *target of residualisation* from these features, and the
+        predict the *target of residualization* from these features, and the
         residual replaces that target before the encoding model is fit.  This
         removes the cross-modally predictable (shared) component, leaving only
-        modality-private information.  Which side is residualised is controlled
+        modality-private information.  Which side is residualized is controlled
         by ``residual_side``.
     residual_alpha : ridge regularisation strength for the residual-feature
         regression (default 1.0).
-    residual_side : ``"embedding"`` (default) residualises the embeddings
-        **ẽ** = **e** − W***r** (W* fit on r → e); ``"fmri"`` residualises the
+    residual_side : ``"embedding"`` (default) residualizes the embeddings
+        **ẽ** = **e** − W***r** (W* fit on r → e); ``"fmri"`` residualizes the
         fMRI responses **Ỹ** = **Y** − V***r** (V* fit on r → Y), e.g. *image
         fMRI − image fMRI predicted from text embeddings*.  Only used when
         ``residual_features`` is provided.  Note: for the ``"fmri"`` variant
         ``noise_ceiling`` is still computed on the original betas, so
-        ``mean_normalized_r`` normalises the encoding of *residualised* Y by the
+        ``mean_normalized_r`` normalises the encoding of *residualized* Y by the
         *original* noise ceiling (parallel to the embedding-side variant).
 
     Returns
@@ -477,7 +477,7 @@ def run_encoding(
         # linear contribution of the residual features (the other modality's
         # embeddings) from both train and test, removing the cross-modally
         # shared part.  ``residual_side`` selects whether the embeddings
-        # (ẽ = e − W*·r) or the fMRI responses (Ỹ = Y − V*·r) are residualised.
+        # (ẽ = e − W*·r) or the fMRI responses (Ỹ = Y − V*·r) are residualized.
         if residual_features is not None:
             r_train = residual_features[train_idx].astype("float32")
             r_test = residual_features[test_idx].astype("float32")

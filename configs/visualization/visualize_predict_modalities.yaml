@@ -52,8 +52,10 @@ vision_model_order:
 
 # Plot options
 annotate: false
-font_scale: 1.2
-figsize: [10, 8]
+# Larger fonts on a slightly smaller heatmap so the text reads clearly in the
+# paper. Kept wide enough that the 14 rotated tick labels do not overlap.
+font_scale: 1.45
+figsize: [9.5, 8]
 
 # Color scale bounds (null = auto)
 vmin: 0.0

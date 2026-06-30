@@ -1,10 +1,10 @@
 """Residual neural encoding: cross-modal ablation via the other modality.
 
 For each encoding condition in the 2×2 cross-modal design, a ridge regression
-is fit on the training split to predict the *target of residualisation* from
+is fit on the training split to predict the *target of residualization* from
 the *other* modality's embedding **r** (the linear text→vision / vision→text
 mapping), and the residual replaces that target in the full encoding pipeline.
-``residual_side`` selects which side is residualised:
+``residual_side`` selects which side is residualized:
 
     - ``"embedding"`` (default): **ẽ** = **e** − W***r** removes the part of the
       embedding predictable from the other modality's embedding.
@@ -15,14 +15,14 @@ mapping), and the residual replaces that target in the full encoding pipeline.
       image fMRI predicted from text embeddings*.
 
 In both cases what remains is modality-*private* information.  A selective drop
-in cross-modal but not within-modality encoding accuracy after residualisation
+in cross-modal but not within-modality encoding accuracy after residualization
 constitutes evidence that cross-modally shared representational content is
 the principal carrier of cross-modal brain alignment.
 
 An optional permuted control is also supported: the residual features **r**
 are randomly permuted across stimuli before fitting W*, providing an
 empirical baseline for the magnitude of accuracy change attributable to the
-residualisation procedure itself.
+residualization procedure itself.
 
 Usage
 -----
@@ -107,7 +107,7 @@ def main(cfg: DictConfig) -> None:
     conditions: dict = OmegaConf.to_container(cfg.conditions, resolve=True)  # type: ignore[assignment]
 
     # -- load & PCA embeddings (shared across subjects) ----------------------
-    # Both modalities are always loaded: each condition residualises its
+    # Both modalities are always loaded: each condition residualizes its
     # embedding against the *other* modality's embedding.
     logger.info("Loading VLM embeddings …")
     embed_data: dict[str, tuple[np.ndarray, np.ndarray]] = {}
@@ -171,7 +171,7 @@ def main(cfg: DictConfig) -> None:
             nc_top_percent=nc_top_percent,
         )
 
-        # Run each condition with residualised embeddings
+        # Run each condition with residualized embeddings
         for cond_name, cond_cfg in tqdm(conditions.items(), desc="    Conditions", leave=False):
             emod = cond_cfg["embed_modality"]
             fmod = cond_cfg["fmri_modality"]
@@ -212,7 +212,7 @@ def main(cfg: DictConfig) -> None:
                 logger.info(
                     f"  {'[permuted] ' if 'permuted' in label else ''}"
                     f"{emod} embed → {fmod} fMRI "
-                    f"({residual_side}-side residualised)"
+                    f"({residual_side}-side residualized)"
                 )
                 result = run_encoding(
                     X,

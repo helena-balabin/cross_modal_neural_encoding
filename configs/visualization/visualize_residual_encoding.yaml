@@ -7,8 +7,13 @@
 residual_root: "outputs/residual_encoding"
 
 # Root holding the standard neural-encoding outputs, searched per model for
-# the matching <model>/summary.csv (used for the residualised − standard delta).
+# the matching <model>/summary.csv (used for the residualized − standard delta).
 encoding_root: "outputs/neural_encoding"
+
+# Which side was residualized: "embedding" or "fmri". Drives the figure titles
+# and the residual x-tick labels. When null it is inferred from residual_root
+# (a name containing "fmri" → fMRI-based, otherwise embedding-based).
+residual_side: null
 
 # Metric column from the summary CSV to plot.
 metric: "mean_normalized_r"

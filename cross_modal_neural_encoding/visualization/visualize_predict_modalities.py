@@ -16,6 +16,7 @@ Hydra config: ``configs/visualization/visualize_predict_modalities.yaml``
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import hydra
 from loguru import logger
@@ -24,9 +25,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 from omegaconf import DictConfig
 import pandas as pd
+from scipy.stats import wilcoxon
 
 from cross_modal_neural_encoding.config import FIGURES_DIR, PROJ_ROOT
-from cross_modal_neural_encoding.utils import configure_plot_fonts, short_model_label
+from cross_modal_neural_encoding.utils import (
+    configure_plot_fonts,
+    short_model_label,
+    significance_label,
+)
 
 configure_plot_fonts()
 
@@ -59,6 +65,7 @@ def _plot_heatmap(
     annotate: bool,
     font_scale: float,
     figsize: tuple[float, float],
+    comparison_note: str | None = None,
 ) -> None:
     fig, ax = plt.subplots(figsize=figsize)
     im = ax.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto")
@@ -68,7 +75,10 @@ def _plot_heatmap(
     ax.set_xticklabels(col_labels, rotation=45, ha="right", fontsize=10 * font_scale)
     ax.set_yticklabels(row_labels, fontsize=10 * font_scale)
     mean_val = float(np.nanmean(data))
-    ax.set_title(f"{title}\nmean = {mean_val:.3f}", fontsize=13 * font_scale, pad=10)
+    subtitle = f"mean = {mean_val:.3f}"
+    if comparison_note:
+        subtitle += f"    |    {comparison_note}"
+    ax.set_title(f"{title}\n{subtitle}", fontsize=13 * font_scale, pad=10)
     ax.set_xlabel(xlabel, fontsize=11 * font_scale, labelpad=8)
     ax.set_ylabel(ylabel, fontsize=11 * font_scale, labelpad=8)
 
@@ -92,7 +102,9 @@ def _plot_heatmap(
     cbar.set_label("Mean Pearson r", fontsize=11 * font_scale)
 
     fig.tight_layout()
-    fig.savefig(output_path, dpi=300)
+    # bbox_inches="tight" so the inline comparison note in the title is never
+    # clipped at the figure edge.
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     logger.success(f"Saved heatmap → {output_path}")
 
@@ -136,6 +148,38 @@ def _create_pivot_matrices(
     return pivot_tv, pivot_vt  # type: ignore[return-value]
 
 
+def _direction_comparison_note(
+    pivot_tv: pd.DataFrame | None,
+    pivot_vt: pd.DataFrame | None,
+) -> str | None:
+    """Paired Wilcoxon signed-rank between the two prediction directions.
+
+    Each (text encoder, vision encoder) combination is paired: the Text → Vision
+    cell ``pivot_tv[t, v]`` against its mirror Vision → Text cell
+    ``pivot_vt[v, t]``. Returns a short annotation string (p-value, stars and
+    which direction is higher), or ``None`` when the directions cannot be aligned
+    or the test is undefined.
+    """
+    if pivot_tv is None or pivot_vt is None:
+        return None
+    # Put Vision → Text on the same (text-row, vision-column) grid as Text → Vision
+    # so the two arrays are paired cell-for-cell by encoder combination.
+    vt_aligned = pivot_vt.T.reindex(index=pivot_tv.index, columns=pivot_tv.columns)
+    a = pivot_tv.to_numpy(dtype=float).ravel()
+    b = vt_aligned.to_numpy(dtype=float).ravel()
+    mask = np.isfinite(a) & np.isfinite(b)
+    a, b = a[mask], b[mask]
+    if len(a) < 2 or np.allclose(a, b):
+        return None
+    try:
+        result = wilcoxon(a, b)
+    except ValueError:
+        return None
+    p = float(cast(float, result[1]))
+    sig = significance_label(p)
+    return f"Text → Vision vs Vision → Text (paired Wilcoxon): p = {p:.2g} {sig}"
+
+
 def _plot_single_results(
     df: pd.DataFrame,
     output_dir: Path,
@@ -152,10 +196,15 @@ def _plot_single_results(
     regressor = str(df["regressor"].iloc[0]) if "regressor" in df.columns and len(df) else ""
     setting = "Linear" if regressor == "ridge" else "Nonlinear"
 
+    # Color each panel by its input modality (text = blue, image = red), matching
+    # the modality scheme used across the paper's figures.
     pastel_blue = _make_colormap(["#F2F6FB", "#BBD4F0", "#6FA8DC"])
-    pastel_yellow = _make_colormap(["#FFFBF0", "#FFE8A1", "#FFC700"])
+    pastel_red = _make_colormap(["#FCF1F1", "#F2C2C2", "#E88989"])
 
     pivot_tv, pivot_vt = _create_pivot_matrices(df, text_order, vision_order)
+
+    # Same paired test annotated on both directions' heatmaps.
+    comparison_note = _direction_comparison_note(pivot_tv, pivot_vt)
 
     if pivot_tv is not None:
         row_labels = [_pretty_label(x) for x in pivot_tv.index.tolist()]
@@ -177,6 +226,7 @@ def _plot_single_results(
             annotate=annotate,
             font_scale=font_scale,
             figsize=figsize,
+            comparison_note=comparison_note,
         )
     else:
         logger.warning("No text_to_vision rows found in results.")
@@ -194,13 +244,14 @@ def _plot_single_results(
             title=f"{setting}: Vision → Text prediction (mean Pearson r)",
             xlabel="Output (text encoders)",
             ylabel="Input (vision encoders)",
-            cmap=pastel_yellow,
+            cmap=pastel_red,
             output_path=output_path,
             vmin=vmin,
             vmax=vmax,
             annotate=annotate,
             font_scale=font_scale,
             figsize=figsize,
+            comparison_note=comparison_note,
         )
     else:
         logger.warning("No vision_to_text rows found in results.")
@@ -235,7 +286,9 @@ def _plot_difference_results(
     vision_order = cfg.get("vision_model_order") or []
     diff_vmax = cfg.get("diff_vmax")  # optional symmetric half-range cap (None = auto)
 
-    diverging_cmap = _make_colormap(["#E26060", "#F2F2F2", "#9CE26A"])
+    # Colorblind-safe diverging map (amber ↔ purple) for the nonlinear − linear
+    # difference; avoids the red↔green pair and the categorical modality hues.
+    diverging_cmap = _make_colormap(["#E8A24C", "#F4F4F4", "#A988C8"])
 
     pivot1_tv, pivot1_vt = _create_pivot_matrices(df1, text_order, vision_order)
     pivot2_tv, pivot2_vt = _create_pivot_matrices(df2, text_order, vision_order)
