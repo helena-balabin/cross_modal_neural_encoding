@@ -154,6 +154,32 @@ def signflip_pvalue_greater(
     return float(p)
 
 
+def signflip_pvalue_two_sided(
+    values: np.ndarray,
+    *,
+    n_permutations: int = 10000,
+    random_state: int = 42,
+) -> float:
+    """Two-sided one-sample sign-flip permutation p-value for mean(values) ≠ 0."""
+    vals = np.asarray(values, dtype=float)
+    vals = vals[np.isfinite(vals)]
+    n = vals.size
+    if n == 0:
+        return float("nan")
+
+    observed = abs(float(np.mean(vals)))
+
+    if n <= 16:
+        all_signs = np.array(np.meshgrid(*[[-1.0, 1.0]] * n, indexing="ij")).reshape(n, -1).T
+        null_stats = np.abs(np.mean(all_signs * vals[None, :], axis=1))
+        return float((np.sum(null_stats >= observed) + 1) / (null_stats.size + 1))
+
+    rng = np.random.default_rng(random_state)
+    signs = rng.choice([-1.0, 1.0], size=(n_permutations, n), replace=True)
+    null_stats = np.abs(np.mean(signs * vals[None, :], axis=1))
+    return float((np.sum(null_stats >= observed) + 1) / (n_permutations + 1))
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Noise Ceiling - NCSNR Framework (for single-trial data)
 # ═══════════════════════════════════════════════════════════════════════════

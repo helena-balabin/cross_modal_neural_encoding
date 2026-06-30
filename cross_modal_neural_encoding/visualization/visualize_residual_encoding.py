@@ -35,8 +35,11 @@ import pandas as pd
 from cross_modal_neural_encoding.config import FIGURES_DIR, PROJ_ROOT
 from cross_modal_neural_encoding.utils import (
     CONDITION_LABELS,
+    benjamini_hochberg,
     configure_plot_fonts,
     short_model_label,
+    signflip_pvalue_two_sided,
+    significance_label,
 )
 from cross_modal_neural_encoding.visualization.visualize_encoding_results import (
     VLM_MODEL_PALETTE,
@@ -154,6 +157,26 @@ def _paired_pct_change(
     return mean, sem
 
 
+def _paired_diffs(
+    standard_df: pd.DataFrame,
+    residual_df: pd.DataFrame,
+    condition: str,
+    metric: str,
+) -> np.ndarray:
+    """Per-subject paired differences (residualized − standard) for a condition.
+
+    Used to test whether a bar's change differs from zero. Subjects are paired by
+    row order (the same convention as ``_paired_pct_change``).
+    """
+    std_vals = standard_df.loc[standard_df["condition"] == condition, metric].to_numpy(dtype=float)
+    res_vals = residual_df.loc[residual_df["condition"] == condition, metric].to_numpy(dtype=float)
+    n = min(len(std_vals), len(res_vals))
+    if n == 0:
+        return np.array([])
+    d = res_vals[:n] - std_vals[:n]
+    return d[np.isfinite(d)]
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Plotting
 # ═══════════════════════════════════════════════════════════════════════════
@@ -197,11 +220,17 @@ def plot_combined_delta(
     n_conditions = len(conditions)
     values = np.full((n_models, n_conditions), np.nan)
     sems = np.full((n_models, n_conditions), np.nan)
+    pvals = np.full((n_models, n_conditions), np.nan)
     for i, it in enumerate(items):
         for j, cond in enumerate(conditions):
             mean, sem = _paired_pct_change(it["standard_summary_df"], it["summary_df"], cond, metric)
             values[i, j] = mean
             sems[i, j] = sem
+            d = _paired_diffs(it["standard_summary_df"], it["summary_df"], cond, metric)
+            if len(d) >= 2:
+                pvals[i, j] = signflip_pvalue_two_sided(d)
+    # Correct the per-bar "different from zero" tests across the whole figure.
+    pvals = benjamini_hochberg(pvals)
 
     model_labels = [it["model_label"] for it in items]
     fig_w = max(8.0, 3.0 + 0.22 * n_models * max(n_conditions, 1))
@@ -229,6 +258,32 @@ def plot_combined_delta(
             label=short_model_label(label),
             zorder=3,
         )
+
+    # Per-bar test: is each bar's % change different from zero? (two-sided
+    # sign-flip over the 8 subjects, BH-corrected above). Only significant bars
+    # are starred — with this many bars, an "ns" on every one would be noise.
+    span = max(float(np.nanmax(values + np.nan_to_num(sems)) - np.nanmin(values - np.nan_to_num(sems))), 1e-6)
+    star_off = 0.012 * span
+    lowest = float(np.nanmin(values - np.nan_to_num(sems)))
+    for i in range(n_models):
+        for j in range(n_conditions):
+            val = values[i, j]
+            if not np.isfinite(val) or not np.isfinite(pvals[i, j]):
+                continue
+            sig = significance_label(float(pvals[i, j]))
+            if sig in ("", "ns"):
+                continue
+            sem = sems[i, j] if np.isfinite(sems[i, j]) else 0.0
+            if val >= 0:
+                y, va = val + sem + star_off, "bottom"
+            else:
+                y, va = val - sem - star_off, "top"
+                lowest = min(lowest, y - star_off)
+            ax.text(
+                x[j] + offsets[i], y, sig, ha="center", va=va,
+                fontsize=6.5 * font_scale, color="darkred", zorder=5,
+            )
+    ax.set_ylim(bottom=min(ax.get_ylim()[0], lowest))
 
     label_map = condition_labels if condition_labels is not None else CONDITION_LABELS
     ax.axhline(0, color="black", linewidth=0.6, zorder=2)
@@ -263,7 +318,8 @@ def plot_combined_delta(
     note = ax.text(
         0.01,
         0.02,
-        "Brackets: pairwise Wilcoxon signed-rank between conditions (BH-FDR corrected)",
+        "Stars on bars: change ≠ 0 (sign-flip over subjects)   ·   "
+        "Brackets: pairwise signed-rank between conditions   ·   BH-FDR corrected",
         transform=ax.transAxes,
         ha="left",
         va="bottom",
