@@ -1045,11 +1045,16 @@ def plot_grouped_model_means(
     sig_title = "Significance"
     if group_sig_correction == "fdr_bh":
         sig_title += "\n(BH-FDR corrected)"
+    # Place the significance key as a single horizontal row below the model
+    # legend (which sits below the axes), so neither legend steals plot width.
+    n_legend_rows = int(np.ceil(n_models / max(n_legend_cols, 1)))
+    sig_y = -0.28 - 0.08 * n_legend_rows - 0.05
     sig_legend = ax.legend(
         sig_handles,
         sig_labels,
-        loc="upper left",
-        bbox_to_anchor=(1.01, 1.0),
+        loc="upper center",
+        bbox_to_anchor=(0.5, sig_y),
+        ncol=len(sig_entries),
         fontsize=8.5 * font_scale,
         title=sig_title,
         title_fontsize=8.5 * font_scale,
@@ -1057,6 +1062,7 @@ def plot_grouped_model_means(
         framealpha=0.9,
         handlelength=0,
         handletextpad=0,
+        columnspacing=1.5,
         borderpad=0.6,
         labelspacing=0.3,
     )
