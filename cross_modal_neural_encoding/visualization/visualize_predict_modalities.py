@@ -16,6 +16,7 @@ Hydra config: ``configs/visualization/visualize_predict_modalities.yaml``
 from __future__ import annotations
 
 from pathlib import Path
+import textwrap
 from typing import cast
 
 import hydra
@@ -78,7 +79,13 @@ def _plot_heatmap(
     subtitle = f"mean = {mean_val:.3f}"
     if comparison_note:
         subtitle += f"    |    {comparison_note}"
-    ax.set_title(f"{title}\n{subtitle}", fontsize=13 * font_scale, pad=10)
+    # Wrap each title line so the title never spills past the figure width
+    # (rather than letting bbox_inches="tight" widen the whole canvas).
+    title_font = 13 * font_scale
+    max_chars = max(20, int(figsize[0] * 72 / (0.55 * title_font)))
+    title_lines = textwrap.fill(title, width=max_chars)
+    subtitle_lines = textwrap.fill(subtitle, width=max_chars)
+    ax.set_title(f"{title_lines}\n{subtitle_lines}", fontsize=title_font, pad=10)
     ax.set_xlabel(xlabel, fontsize=11 * font_scale, labelpad=8)
     ax.set_ylabel(ylabel, fontsize=11 * font_scale, labelpad=8)
 

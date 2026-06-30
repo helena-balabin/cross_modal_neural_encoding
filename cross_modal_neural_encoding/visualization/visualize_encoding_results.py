@@ -102,6 +102,23 @@ configure_plot_fonts()
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def _legend_ncol(
+    labels: list[str], fig_width_in: float, font_pt: float, desired_max: int
+) -> int:
+    """Largest column count whose (widest-label) columns fit within the figure.
+
+    Conservative on purpose — it sizes every column to the longest label so a
+    horizontal legend never ends up wider than the figure, even if that means
+    wrapping onto more rows.
+    """
+    longest = max((len(str(s)) for s in labels), default=1)
+    # ~0.52 em per character for the sans-serif labels, plus ~3 chars for the
+    # legend handle and inter-column padding.
+    col_in = (longest + 3) * 0.52 * font_pt / 72.0
+    fit = int(fig_width_in / max(col_in, 1e-6))
+    return max(1, min(desired_max, fit, len(labels)))
+
+
 def _model_category_rank(model_label: str) -> tuple[int, str]:
     """Sort key: VLM first, then vision-only, then text-only."""
     label = model_label.lower()
@@ -904,10 +921,11 @@ def plot_grouped_model_means(
 
     # Adaptive width so individual bars stay readable as the model count
     # grows; never narrower than the configured width. The legend goes below
-    # in balanced columns spanning the figure width.
-    n_legend_cols = int(min(max(n_models, 1), 6))
+    # in balanced columns, capped so it never grows wider than the figure.
     base_w, base_h = figsize
     fig_w = max(base_w, 3.0 + 0.20 * n_models * n_conditions)
+    legend_labels = [short_model_label(m) for m in model_labels]
+    n_legend_cols = _legend_ncol(legend_labels, fig_w, 8.5 * font_scale, 6)
     fig, ax = plt.subplots(figsize=(fig_w, base_h))
     x = np.arange(n_conditions)
     total_width = 0.82
@@ -1045,16 +1063,18 @@ def plot_grouped_model_means(
     sig_title = "Significance"
     if group_sig_correction == "fdr_bh":
         sig_title += "\n(BH-FDR corrected)"
-    # Place the significance key as a single horizontal row below the model
-    # legend (which sits below the axes), so neither legend steals plot width.
+    # Place the significance key as a horizontal row below the model legend
+    # (which sits below the axes), capped so neither legend exceeds the figure
+    # width.
     n_legend_rows = int(np.ceil(n_models / max(n_legend_cols, 1)))
     sig_y = -0.28 - 0.08 * n_legend_rows - 0.05
+    sig_ncol = _legend_ncol(sig_labels, fig_w, 8.5 * font_scale, len(sig_entries))
     sig_legend = ax.legend(
         sig_handles,
         sig_labels,
         loc="upper center",
         bbox_to_anchor=(0.5, sig_y),
-        ncol=len(sig_entries),
+        ncol=sig_ncol,
         fontsize=8.5 * font_scale,
         title=sig_title,
         title_fontsize=8.5 * font_scale,

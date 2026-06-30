@@ -45,6 +45,7 @@ from cross_modal_neural_encoding.visualization.visualize_encoding_results import
     VLM_MODEL_PALETTE,
     _collect_model_dirs,
     _model_category_rank,
+    _legend_ncol,
     annotate_pairwise_brackets,
     load_aggregated,
     load_summary,
@@ -311,7 +312,9 @@ def plot_combined_delta(
     leg = ax.legend(
         loc="upper center",
         bbox_to_anchor=(0.5, -0.18),
-        ncol=int(min(max(n_models, 1), 5)),
+        ncol=_legend_ncol(
+            [short_model_label(m) for m in model_labels], fig_w, 8 * font_scale, 5
+        ),
         fontsize=8 * font_scale,
         frameon=False,
     )
