@@ -421,15 +421,20 @@ def main(cfg: DictConfig) -> None:
     #    so widen the bars figure by ~1.13× the delta's width to land at the same
     #    rendered width.
     delta_w = max(8.0, 3.0 + 0.22 * len(model_results) * 4)
+    # Wider-and-flatter, larger-font variant so the figure stays readable when two
+    # panels are stacked at full text width. All three are tunable from the config.
+    bars_font_scale = float(cfg.get("bars_font_scale", 2.0))
+    bars_height = float(cfg.get("bars_height", 4.2))
+    bars_width_scale = float(cfg.get("bars_width_scale", 1.2))
     plot_grouped_model_means(
         model_results,
         metric=metric,
         alpha=0.05,
-        font_scale=1.3,
+        font_scale=bars_font_scale,
         compress_normalized_axis=False,
         normalized_axis_linthresh=0.08,
         output_path=output_dir / "residual_encoding_bars.png",
-        figsize=(1.13 * delta_w, 6.4),
+        figsize=(1.13 * delta_w * bars_width_scale, bars_height),
         y_limits=None,
         title=f"{title_prefix}\nResidual encoding accuracy (group means)",
         condition_labels=residual_labels,

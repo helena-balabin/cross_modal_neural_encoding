@@ -1035,9 +1035,30 @@ def plot_grouped_model_means(
     )
     ax.axhline(y=0, color="black", linewidth=0.5, zorder=1)
     ax.grid(axis="y", alpha=0.3, zorder=0)
+
+    # Anchor the legends a fixed gap below the *actual* rendered x-tick labels
+    # (rotated, two lines) so they never overlap the condition labels, however
+    # short the figure gets. Fall back to a fixed offset if no renderer is ready.
+    try:
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()  # noqa
+        inv_axes = ax.transAxes.inverted()
+        label_bottom = min(
+            (
+                inv_axes.transform((0.0, lbl.get_window_extent(renderer=renderer).y0))[1]
+                for lbl in ax.get_xticklabels()
+            ),
+            default=-0.20,
+        )
+        model_legend_y = label_bottom - 0.05
+    except Exception:  # pragma: no cover - renderer unavailable
+        renderer = None
+        inv_axes = None
+        model_legend_y = -0.28
+
     model_legend = ax.legend(
         loc="upper center",
-        bbox_to_anchor=(0.5, -0.28),
+        bbox_to_anchor=(0.5, model_legend_y),
         fontsize=8.5 * font_scale,
         ncol=n_legend_cols,
         frameon=False,
@@ -1066,8 +1087,15 @@ def plot_grouped_model_means(
     # Place the significance key as a horizontal row below the model legend
     # (which sits below the axes), capped so neither legend exceeds the figure
     # width.
-    n_legend_rows = int(np.ceil(n_models / max(n_legend_cols, 1)))
-    sig_y = -0.28 - 0.08 * n_legend_rows - 0.05
+    # Stack the significance key just below the model legend, measured from its
+    # rendered extent so the gap is constant regardless of legend row count.
+    if renderer is not None and inv_axes is not None:
+        fig.canvas.draw()
+        leg_ext = model_legend.get_window_extent(renderer=renderer)
+        sig_y = inv_axes.transform((0.0, leg_ext.y0))[1] - 0.03
+    else:
+        n_legend_rows = int(np.ceil(n_models / max(n_legend_cols, 1)))
+        sig_y = model_legend_y - 0.08 * n_legend_rows - 0.05
     sig_ncol = _legend_ncol(sig_labels, fig_w, 8.5 * font_scale, len(sig_entries))
     sig_legend = ax.legend(
         sig_handles,
