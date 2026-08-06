@@ -61,7 +61,9 @@ grouped_output_path: null
 # Width auto-expands with the number of models; this is the minimum. Height
 # leaves room for the per-condition pairwise significance brackets (one level
 # per pair) drawn above the bars.
-grouped_figsize: [12, 5.4]
+grouped_figsize: [12, 4.4]
+# Draw per-bar SEM error bars (SD across subjects / sqrt(n)) on the grouped bars.
+show_error_bars: true
 
 # Supplementary per-subject plot (mean across models)
 plot_subject_mean_across_models: true

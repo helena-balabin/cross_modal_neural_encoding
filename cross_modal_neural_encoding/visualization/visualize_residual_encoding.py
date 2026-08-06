@@ -61,9 +61,10 @@ configure_plot_fonts()
 
 METRIC = "mean_normalized_r"
 
-# Delta plot condition order: group by embedding modality, within-then-cross,
-# so each pair of bars is the within-vs-cross contrast for one embedding.
-DELTA_CONDITION_ORDER = ["text_to_text", "text_to_image", "image_to_image", "image_to_text"]
+# Delta plot condition order — kept identical to CONDITION_LABELS so the group
+# order (image→image, image→text, text→image, text→text) matches every other
+# figure. CONDITION_LABELS is the single source of truth for condition ordering.
+DELTA_CONDITION_ORDER = list(CONDITION_LABELS)
 
 # Title prefix per residualization side (American spelling).
 RESIDUAL_SIDE_TITLES = {
@@ -158,6 +159,28 @@ def _paired_pct_change(
     return mean, sem
 
 
+def _paired_abs_change(
+    standard_df: pd.DataFrame,
+    residual_df: pd.DataFrame,
+    condition: str,
+    metric: str,
+) -> tuple[float, float]:
+    """Mean and SEM of the residualization effect in raw metric units.
+
+    Unlike ``_paired_pct_change`` this is the absolute per-subject paired change
+    (residualized − standard) averaged over subjects, with no baseline in the
+    denominator.  It is therefore interpretable for every condition — including
+    the cross-modal ones where the noise-ceiling-normalised baseline is near zero
+    and the percentage version is undefined (NaN).
+    """
+    d = _paired_diffs(standard_df, residual_df, condition, metric)
+    if not len(d):
+        return np.nan, 0.0
+    mean = float(np.mean(d))
+    sem = float(np.std(d) / np.sqrt(len(d))) if len(d) > 1 else 0.0
+    return mean, sem
+
+
 def _paired_diffs(
     standard_df: pd.DataFrame,
     residual_df: pd.DataFrame,
@@ -191,14 +214,30 @@ def plot_combined_delta(
     font_scale: float = 1.3,
     title: str = "Residualization effect across models",
     condition_labels: dict[str, str] | None = None,
+    mode: str = "percent",
 ) -> None:
-    """One figure: grouped bars of the % change (residualized vs. standard) per condition.
+    """One figure: grouped bars of the change (residualized vs. standard) per condition.
 
     x-axis = conditions (within/cross grouped per embedding modality); bars within
-    each condition = models. Each bar is the residualization effect expressed as a
-    percentage of the original encoding performance, so a drop after residualization
-    is a downward (negative) bar.
+    each condition = models. Each bar is the residualization effect, so a drop after
+    residualization is a downward (negative) bar. ``mode`` selects how the effect is
+    expressed:
+
+    - ``"percent"`` — as a percentage of the original encoding performance
+      (``_paired_pct_change``); NaN for near-zero baselines.
+    - ``"absolute"`` — the raw ``residualized − standard`` change in metric units
+      (``_paired_abs_change``); interpretable for every condition.
     """
+    if mode not in ("percent", "absolute"):
+        raise ValueError(f"mode must be 'percent' or 'absolute', got {mode!r}")
+    change_fn = _paired_abs_change if mode == "absolute" else _paired_pct_change
+    if mode == "percent":
+        ylabel = "Change in encoding performance (%)\n(residualized vs. standard)"
+    else:
+        # Name the unit of the raw difference: the noise-ceiling-normalised metric
+        # is reported as r / NC, everything else as a Pearson r.
+        unit = "Δ r / NC" if "normalized" in metric.lower() else "Δ r"
+        ylabel = f"Change in encoding performance ({unit})\n(residualized − standard)"
     items = [
         it
         for it in model_results
@@ -224,7 +263,7 @@ def plot_combined_delta(
     pvals = np.full((n_models, n_conditions), np.nan)
     for i, it in enumerate(items):
         for j, cond in enumerate(conditions):
-            mean, sem = _paired_pct_change(it["standard_summary_df"], it["summary_df"], cond, metric)
+            mean, sem = change_fn(it["standard_summary_df"], it["summary_df"], cond, metric)
             values[i, j] = mean
             sems[i, j] = sem
             d = _paired_diffs(it["standard_summary_df"], it["summary_df"], cond, metric)
@@ -290,9 +329,7 @@ def plot_combined_delta(
     ax.axhline(0, color="black", linewidth=0.6, zorder=2)
     ax.set_xticks(x)
     ax.set_xticklabels([label_map.get(c, c) for c in conditions], fontsize=10 * font_scale)
-    ax.set_ylabel(
-        "Change in encoding performance (%)\n(residualized vs. standard)", fontsize=11 * font_scale
-    )
+    ax.set_ylabel(ylabel, fontsize=11 * font_scale)
     ax.set_title(title, fontsize=14 * font_scale, fontweight="bold")
     ax.grid(axis="y", alpha=0.3, zorder=0)
     ax.spines[["top", "right"]].set_visible(False)
@@ -416,16 +453,14 @@ def main(cfg: DictConfig) -> None:
 
     # 1) Grouped model-comparison bars (one bar per model per condition) — the
     #    same figure the main neural-encoding pipeline uses to compare models.
-    #    Match the width of the delta plot below. The delta uses tight_layout
-    #    (axes fills ~0.88 of the figure) while the grouped bars do not (~0.78),
-    #    so widen the bars figure by ~1.13× the delta's width to land at the same
-    #    rendered width.
+    #    Sized and styled to match the ablation-delta figure below: same width
+    #    (delta_w) and height (6.4), same font scale, and — via significance_note
+    #    — a single model legend plus a one-line significance note at the bottom
+    #    instead of the framed threshold box. All three knobs stay config-tunable.
     delta_w = max(8.0, 3.0 + 0.22 * len(model_results) * 4)
-    # Wider-and-flatter, larger-font variant so the figure stays readable when two
-    # panels are stacked at full text width. All three are tunable from the config.
-    bars_font_scale = float(cfg.get("bars_font_scale", 2.0))
-    bars_height = float(cfg.get("bars_height", 4.2))
-    bars_width_scale = float(cfg.get("bars_width_scale", 1.2))
+    bars_font_scale = float(cfg.get("bars_font_scale", 1.3))
+    bars_height = float(cfg.get("bars_height", 6.4))
+    bars_width_scale = float(cfg.get("bars_width_scale", 1.0))
     plot_grouped_model_means(
         model_results,
         metric=metric,
@@ -434,19 +469,34 @@ def main(cfg: DictConfig) -> None:
         compress_normalized_axis=False,
         normalized_axis_linthresh=0.08,
         output_path=output_dir / "residual_encoding_bars.png",
-        figsize=(1.13 * delta_w * bars_width_scale, bars_height),
+        figsize=(delta_w * bars_width_scale, bars_height),
         y_limits=None,
         title=f"{title_prefix}\nResidual encoding accuracy (group means)",
         condition_labels=residual_labels,
+        significance_note=True,
+        show_error_bars=True,
     )
 
-    # 2) One combined delta figure across all models.
+    # 2) Combined delta figure across all models — relative (% of original).
     plot_combined_delta(
         model_results,
         metric=metric,
         output_path=output_dir / "ablation_delta.png",
         title=f"{title_prefix}\nResidualization effect across models",
         condition_labels=residual_labels,
+        mode="percent",
+    )
+
+    # 3) Same figure as absolute differences (residualized − standard, metric
+    #    units) — interpretable for the cross-modal conditions where the % version
+    #    is undefined against a near-zero baseline.
+    plot_combined_delta(
+        model_results,
+        metric=metric,
+        output_path=output_dir / "ablation_delta_absolute.png",
+        title=f"{title_prefix}\nResidualization effect across models (absolute)",
+        condition_labels=residual_labels,
+        mode="absolute",
     )
 
 

@@ -468,7 +468,7 @@ def annotate_pairwise_brackets(
     # when every bar is negative (as in the % delta plot).
     top = max(float(np.nanmax(values)), 0.0)
     base = top + 0.06 * span
-    step = 0.07 * span
+    step = 0.055 * span
     tick = 0.012 * span
 
     highest = base
@@ -490,7 +490,7 @@ def annotate_pairwise_brackets(
             sig,
             ha="center",
             va="bottom",
-            fontsize=8.0 * font_scale,
+            fontsize=9.5 * font_scale,
             color="#333333" if sig == "ns" else "darkred",
             fontweight="normal" if sig == "ns" else "bold",
             zorder=6,
@@ -852,6 +852,8 @@ def plot_grouped_model_means(
     group_sig_correction: str = "fdr_bh",
     title: str = "Model Comparison Based on Group Means",
     condition_labels: dict[str, str] | None = None,
+    significance_note: bool = False,
+    show_error_bars: bool = False,
 ) -> None:
     """Plot grouped bars comparing model means across conditions.
 
@@ -859,6 +861,11 @@ def plot_grouped_model_means(
     are shown as empty slots (no bar). Significance stars come from the
     combined subject-level permutation test (saved ``null_mean_r.npy``
     files), falling back to the sign-flip test when nulls are unavailable.
+
+    When ``significance_note`` is set, the framed star-threshold legend is
+    replaced by a compact one-line note inside the axes (matching the
+    ``plot_combined_delta`` ablation-delta figure), leaving just the model
+    legend as a single row below the plot.
     """
     if len(model_results) < 2:
         logger.warning("Grouped model plot requires at least two models.")
@@ -917,18 +924,51 @@ def plot_grouped_model_means(
     if group_sig_correction == "fdr_bh":
         pvals = benjamini_hochberg(pvals)
 
+    # Optional per-bar error bars: SEM across subjects of each model's condition
+    # mean, matching plot_combined_delta. Uses the aggregated across-subject SD
+    # and the subject count from the per-subject summary (SEM = SD / sqrt(n)).
+    sems = np.full((n_models, n_conditions), np.nan, dtype=float)
+    if show_error_bars:
+        for i, item in enumerate(model_results):
+            df = item["aggregated_df"]
+            sdf = item.get("summary_df")
+            has_summary = (
+                sdf is not None and "condition" in sdf.columns and metric in sdf.columns
+            )
+            for j, cond in enumerate(conditions):
+                if cond not in df.index:
+                    continue
+                try:
+                    sd = float(df.loc[cond, (metric, "std")])
+                except (KeyError, ValueError):
+                    continue
+                n = 0
+                if has_summary:
+                    col = sdf.loc[sdf["condition"] == cond, metric].to_numpy(dtype=float)  # type: ignore
+                    n = int(np.isfinite(col).sum())
+                if n >= 2 and np.isfinite(sd):
+                    sems[i, j] = sd / np.sqrt(n)
+
     is_normalized_metric = "normalized" in metric.lower()
 
     # Adaptive width so individual bars stay readable as the model count
-    # grows; never narrower than the configured width. The legend goes below
-    # in balanced columns, capped so it never grows wider than the figure.
+    # grows; never narrower than the configured width. With many models per
+    # group the bars get skinny and their significance stars collide, so scale
+    # the width generously with the total bar count. The legend goes below in
+    # balanced columns (more of them as the figure widens), capped so it never
+    # grows wider than the figure.
     base_w, base_h = figsize
-    fig_w = max(base_w, 3.0 + 0.20 * n_models * n_conditions)
+    fig_w = max(base_w, 3.0 + 0.22 * n_models * n_conditions)
+    # The legend, significance key and per-bar stars carry the actual content of
+    # the figure, so give them a larger size than the (less informative) y-axis
+    # ticks. Compute the legend column count at the rendered size so a wider font
+    # never overflows the figure width.
+    legend_fs = 10.5 * font_scale
     legend_labels = [short_model_label(m) for m in model_labels]
-    n_legend_cols = _legend_ncol(legend_labels, fig_w, 8.5 * font_scale, 6)
+    n_legend_cols = _legend_ncol(legend_labels, fig_w, legend_fs, 6)
     fig, ax = plt.subplots(figsize=(fig_w, base_h))
     x = np.arange(n_conditions)
-    total_width = 0.82
+    total_width = 0.94
     bar_w = min(0.16, total_width / max(n_models, 1))
     offsets = (np.arange(n_models) - (n_models - 1) / 2.0) * bar_w
     category_palettes = {
@@ -946,11 +986,17 @@ def plot_grouped_model_means(
         category_counts[category] = category_counts.get(category, 0) + 1
 
     if y_limits is None:
-        finite_values = values[np.isfinite(values)]
+        finite_mask = np.isfinite(values)
+        finite_values = values[finite_mask]
         if finite_values.size == 0:
             logger.warning("No finite values available for grouped plot.")
             return
-        stds = np.zeros_like(finite_values)
+        # Let the error bars widen the limits so whiskers are never clipped.
+        stds = (
+            np.where(np.isfinite(sems), sems, 0.0)[finite_mask]
+            if show_error_bars
+            else np.zeros_like(finite_values)
+        )
         y_min, y_max = _compute_plot_ylims(
             finite_values,
             stds,
@@ -970,10 +1016,13 @@ def plot_grouped_model_means(
             x + offsets[i],
             values[i],
             width=bar_w * 0.95,
+            yerr=sems[i] if show_error_bars else None,
             color=colors[i],
             edgecolor="#4A4A4A",
             linewidth=0.5,
             alpha=0.9,
+            error_kw={"linewidth": 0.7},
+            capsize=2,
             label=short_model_label(label),
             zorder=3,
         )
@@ -985,10 +1034,11 @@ def plot_grouped_model_means(
             ax.text(
                 xj,
                 y_na,
-                "na",
+                "n\na",
                 ha="center",
                 va="bottom",
-                fontsize=8.0 * font_scale,
+                linespacing=0.6,
+                fontsize=9.5 * font_scale,
                 color="#5C5C5C",
                 zorder=4,
             )
@@ -1003,31 +1053,43 @@ def plot_grouped_model_means(
             sig = significance_label(float(pval), alpha)
             if not sig:
                 continue
-            y_sig = hj + (0.015 * (y_max - y_min) if hj >= 0 else -0.015 * (y_max - y_min))
+            # Clear the error-bar whisker (if any) before adding the star offset.
+            err = sems[i, j] if show_error_bars and np.isfinite(sems[i, j]) else 0.0
+            pad = 0.015 * (y_max - y_min)
+            y_sig = hj + (err + pad if hj >= 0 else -(err + pad))
             va = "bottom" if hj >= 0 else "top"
+            # Stack the significance characters vertically with newlines (rather
+            # than rotating the string 90°) so each glyph stays horizontally
+            # centred on the bar — a rotated "***" lands off-centre because the
+            # asterisk sits high in its character cell.
             ax.text(
                 xj,
                 y_sig,
-                sig,
+                "\n".join(sig),
                 ha="center",
                 va=va,
-                fontsize=8.5 * font_scale,
+                linespacing=0.6,
+                fontsize=10.0 * font_scale,
                 color="black" if sig == "ns" else "darkred",
                 zorder=5,
             )
 
     ax.set_xticks(x)
+    # In note mode, match the ablation-delta figure's horizontal x labels (which
+    # keep the figure flat); otherwise rotate to fit many narrow condition groups.
+    # The horizontal labels are wide, so use a slightly smaller size than the
+    # rotated variant to keep adjacent condition labels from touching.
     ax.set_xticklabels(
         labels,
-        fontsize=10.5 * font_scale,
-        rotation=20,
-        ha="right",
+        fontsize=(9 if significance_note else 12.5) * font_scale,
+        rotation=0 if significance_note else 32,
+        ha="center" if significance_note else "right",
     )
     ax.tick_params(axis="y", labelsize=12 * font_scale)
     if is_normalized_metric:
-        ax.set_ylabel("Normalized performance\n(r / NC)", fontsize=11.5 * font_scale)
+        ax.set_ylabel("Normalized performance\n(r / NC)", fontsize=10 * font_scale)
     else:
-        ax.set_ylabel("Pearson correlation", fontsize=11.5 * font_scale)
+        ax.set_ylabel("Pearson correlation", fontsize=10 * font_scale)
     ax.set_title(
         title,
         fontsize=15 * font_scale,
@@ -1041,7 +1103,7 @@ def plot_grouped_model_means(
     # short the figure gets. Fall back to a fixed offset if no renderer is ready.
     try:
         fig.canvas.draw()
-        renderer = fig.canvas.get_renderer()  # noqa
+        renderer = fig.canvas.get_renderer()  # type: ignore
         inv_axes = ax.transAxes.inverted()
         label_bottom = min(
             (
@@ -1050,16 +1112,19 @@ def plot_grouped_model_means(
             ),
             default=-0.20,
         )
-        model_legend_y = label_bottom - 0.05
+        # Horizontal labels (note mode) sit close under the axis, so drop the
+        # legend a bit *below* their bottom edge; rotated labels extend far down
+        # and instead need the small positive nudge back toward the axis.
+        model_legend_y = label_bottom + (-0.05 if significance_note else 0.06)
     except Exception:  # pragma: no cover - renderer unavailable
         renderer = None
         inv_axes = None
-        model_legend_y = -0.28
+        model_legend_y = -0.20
 
     model_legend = ax.legend(
         loc="upper center",
         bbox_to_anchor=(0.5, model_legend_y),
-        fontsize=8.5 * font_scale,
+        fontsize=legend_fs,
         ncol=n_legend_cols,
         frameon=False,
         columnspacing=1.4,
@@ -1067,53 +1132,80 @@ def plot_grouped_model_means(
     )
     ax.add_artist(model_legend)
 
-    # Second legend explaining the significance stars. The same star scheme is
-    # used for two tests, so spell out which is which: per-bar stars test each
-    # bar against chance; the brackets test pairs of conditions (signed-rank).
-    stat_sym = "q" if group_sig_correction == "fdr_bh" else "p"
-    sig_entries = [
-        ("***", f"{stat_sym} < 0.001"),
-        ("**", f"{stat_sym} < 0.01"),
-        ("*", f"{stat_sym} < {alpha:g}"),
-        ("ns", "not significant"),
-        ("", "bars: vs. chance"),
-        ("", "brackets: pairwise (signed-rank)"),
-    ]
-    sig_handles = [Line2D([], [], linestyle="none") for _ in sig_entries]
-    sig_labels = [(f"{stars}  {desc}" if stars else desc) for stars, desc in sig_entries]
-    sig_title = "Significance"
-    if group_sig_correction == "fdr_bh":
-        sig_title += "\n(BH-FDR corrected)"
-    # Place the significance key as a horizontal row below the model legend
-    # (which sits below the axes), capped so neither legend exceeds the figure
-    # width.
-    # Stack the significance key just below the model legend, measured from its
-    # rendered extent so the gap is constant regardless of legend row count.
-    if renderer is not None and inv_axes is not None:
-        fig.canvas.draw()
-        leg_ext = model_legend.get_window_extent(renderer=renderer)
-        sig_y = inv_axes.transform((0.0, leg_ext.y0))[1] - 0.03
+    if significance_note:
+        # Compact one-line significance note inside the axes, matching the
+        # ablation-delta figure (plot_combined_delta) instead of the framed
+        # threshold box. Per-bar stars test each bar against chance; the brackets
+        # test pairs of conditions (signed-rank). Carve extra headroom at the
+        # bottom first so the note sits in a clear strip below the lowest bars and
+        # their "ns" labels (as it does in the delta figure).
+        y_min = y_min - 0.16 * (y_max - y_min)
+        note_text = (
+            "Stars on bars: vs. chance   ·   "
+            "Brackets: pairwise signed-rank between conditions"
+        )
+        if group_sig_correction == "fdr_bh":
+            note_text += "   ·   BH-FDR corrected"
+        ax.text(
+            0.01,
+            0.02,
+            note_text,
+            transform=ax.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=8 * font_scale,
+            color="#333333",
+            zorder=6,
+        )
+        sig_legend = None
     else:
-        n_legend_rows = int(np.ceil(n_models / max(n_legend_cols, 1)))
-        sig_y = model_legend_y - 0.08 * n_legend_rows - 0.05
-    sig_ncol = _legend_ncol(sig_labels, fig_w, 8.5 * font_scale, len(sig_entries))
-    sig_legend = ax.legend(
-        sig_handles,
-        sig_labels,
-        loc="upper center",
-        bbox_to_anchor=(0.5, sig_y),
-        ncol=sig_ncol,
-        fontsize=8.5 * font_scale,
-        title=sig_title,
-        title_fontsize=8.5 * font_scale,
-        frameon=True,
-        framealpha=0.9,
-        handlelength=0,
-        handletextpad=0,
-        columnspacing=1.5,
-        borderpad=0.6,
-        labelspacing=0.3,
-    )
+        # Second legend explaining the significance stars. The same star scheme is
+        # used for two tests, so spell out which is which: per-bar stars test each
+        # bar against chance; the brackets test pairs of conditions (signed-rank).
+        stat_sym = "q" if group_sig_correction == "fdr_bh" else "p"
+        sig_entries = [
+            ("***", f"{stat_sym} < 0.001"),
+            ("**", f"{stat_sym} < 0.01"),
+            ("*", f"{stat_sym} < {alpha:g}"),
+            ("ns", "not significant"),
+            ("", "bars: vs. chance"),
+            ("", "brackets: pairwise (signed-rank)"),
+        ]
+        sig_handles = [Line2D([], [], linestyle="none") for _ in sig_entries]
+        sig_labels = [(f"{stars}  {desc}" if stars else desc) for stars, desc in sig_entries]
+        sig_title = "Significance"
+        if group_sig_correction == "fdr_bh":
+            sig_title += "\n(BH-FDR corrected)"
+        # Place the significance key as a horizontal row below the model legend
+        # (which sits below the axes), capped so neither legend exceeds the figure
+        # width.
+        # Stack the significance key just below the model legend, measured from its
+        # rendered extent so the gap is constant regardless of legend row count.
+        if renderer is not None and inv_axes is not None:
+            fig.canvas.draw()
+            leg_ext = model_legend.get_window_extent(renderer=renderer)
+            sig_y = inv_axes.transform((0.0, leg_ext.y0))[1] - 0.03
+        else:
+            n_legend_rows = int(np.ceil(n_models / max(n_legend_cols, 1)))
+            sig_y = model_legend_y - 0.08 * n_legend_rows - 0.05
+        sig_ncol = _legend_ncol(sig_labels, fig_w, legend_fs, len(sig_entries))
+        sig_legend = ax.legend(
+            sig_handles,
+            sig_labels,
+            loc="upper center",
+            bbox_to_anchor=(0.5, sig_y),
+            ncol=sig_ncol,
+            fontsize=legend_fs,
+            title=sig_title,
+            title_fontsize=legend_fs,
+            frameon=True,
+            framealpha=0.9,
+            handlelength=0,
+            handletextpad=0,
+            columnspacing=1.5,
+            borderpad=0.6,
+            labelspacing=0.3,
+        )
     ax.margins(x=0.03)
 
     if is_normalized_metric and compress_normalized_axis:
@@ -1144,11 +1236,12 @@ def plot_grouped_model_means(
         output_path = FIGURES_DIR / "encoding_results_models_grouped.png"
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    extra_artists = (model_legend,) if sig_legend is None else (model_legend, sig_legend)
     fig.savefig(
         output_path,
         dpi=300,
         bbox_inches="tight",
-        bbox_extra_artists=(model_legend, sig_legend),
+        bbox_extra_artists=extra_artists,
     )
     logger.success(f"Grouped-model figure saved to {output_path}")
     plt.close(fig)
@@ -1466,6 +1559,7 @@ def main(cfg: DictConfig) -> None:
             group_sig_permutations=int(cfg.get("group_sig_permutations", 10000)),
             group_sig_random_state=int(cfg.get("group_sig_random_state", 42)),
             group_sig_correction=group_sig_correction,
+            show_error_bars=bool(cfg.get("show_error_bars", True)),
         )
 
     if bool(cfg.get("plot_subject_mean_across_models", True)):
