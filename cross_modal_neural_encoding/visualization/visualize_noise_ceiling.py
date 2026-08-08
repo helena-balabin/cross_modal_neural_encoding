@@ -1,9 +1,27 @@
-"""Generate surface plots with vertices colored by noise ceiling percentiles.
+"""Render the voxels the encoding models are fit on, per modality, on the cortex.
 
-Creates visualizations of brain surface voxels with top percentiles of noise
-ceiling (from config, default 10%, 20%, 30%). Loads GLMsingle betas, normalizes
-within runs, computes noise ceiling signal-to-noise ratio, and generates
-corresponding surface plots.
+Loads GLMsingle betas, normalizes within runs, computes the modality-specific noise
+ceiling and keeps the top ``percent`` of it via :func:`select_top_nc_voxels` — the
+same rule ``build_fmri_cache`` applies for ``voxel_keep``, so the figure marks
+exactly the voxels that enter the encoding models. Keep ``percent`` equal to
+``nc_top_percent`` in ``configs/modeling/neural_encoding.yaml``.
+
+Note that "top 20%" is 20% of the voxels with a *positive* noise ceiling, which are
+only ~57% of the brain mask; the retained set is ~11.5% of in-brain voxels and
+~13% of grey matter, so the rendered cortex is well under 20%.
+
+Two target spaces are supported via ``space``:
+
+``mni``
+    Warp the noise ceiling volumes to ``MNI152NLin2009cAsym`` with the fMRIPrep
+    ``from-T1w_to-MNI...`` transform (``antsApplyTransforms``) and render them on
+    fsaverage, so all subjects are directly comparable.  Requires ANTs::
+
+        module load gcc/12.3 ants/2.6.5
+
+``native``
+    Render on the subject's own FreeSurfer surfaces (not comparable across
+    subjects).
 
 Usage::
 
@@ -13,11 +31,16 @@ Usage::
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+from typing import cast
 
 import hydra
 from loguru import logger
+from matplotlib.colors import ListedColormap
 import nibabel as nib
-from nilearn import plotting, surface
+from nilearn import datasets, plotting, surface
 import numpy as np
 from omegaconf import DictConfig
 
@@ -31,7 +54,17 @@ from cross_modal_neural_encoding.utils import (
     load_brain_mask,
     load_design_matrix_mapping,
     normalize_betas_per_run,
+    select_top_nc_voxels,
 )
+
+MNI_TEMPLATE_SPACE = "MNI152NLin2009cAsym"
+
+# One flat colour per modality, from the project palette (see docs/09_visualization.md).
+# Flat rather than a value ramp on purpose: the figure's question is how much cortex
+# each selection level covers, and a ramp answers a different one. Shading the low
+# noise ceilings pale hides exactly the vertices a wider level adds, so the levels
+# read as identical even when they differ threefold.
+MODALITY_COLORS = {"text": "#7EAEDB", "image": "#E88989"}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Data Loading and Processing
@@ -113,6 +146,115 @@ def load_all_runs(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def require_ants() -> str:
+    """Return the ``antsApplyTransforms`` executable or explain how to get it."""
+    exe = shutil.which("antsApplyTransforms")
+    if exe is None:
+        raise RuntimeError(
+            "antsApplyTransforms not found on PATH. On Vulcan run "
+            "`module load gcc/12.3 ants/2.6.5` before this script "
+            "(the `ants` PyPI package in .venv is unrelated to ANTsPy)."
+        )
+    return exe
+
+
+def find_t1w_to_mni_transform(fmriprep_dir: Path, subject: str) -> Path:
+    """Locate the fMRIPrep composite T1w → MNI warp for one subject."""
+    anat_dirs = _find_subdir(fmriprep_dir / subject, "anat")
+    pattern = f"*from-T1w_to-{MNI_TEMPLATE_SPACE}_mode-image_xfm.h5"
+    matches = [f for d in anat_dirs for f in sorted(d.glob(pattern))]
+    if not matches:
+        raise FileNotFoundError(f"No T1w→{MNI_TEMPLATE_SPACE} transform for {subject}")
+    return matches[0]
+
+
+def find_mni_reference(fmriprep_dir: Path, subject: str) -> Path:
+    """Return the MNI BOLD reference defining the output grid.
+
+    fMRIPrep resamples every subject onto the same template grid at the BOLD
+    resolution, so the subjects stay voxel-aligned with one another.
+    """
+    func_dirs = _find_subdir(fmriprep_dir / subject, "func")
+    pattern = f"*space-{MNI_TEMPLATE_SPACE}_boldref.nii.gz"
+    matches = [f for d in func_dirs for f in sorted(d.glob(pattern))]
+    if not matches:
+        raise FileNotFoundError(f"No MNI boldref for {subject}; cannot define output grid")
+    return matches[0]
+
+
+def warp_volume_to_mni(
+    volume: np.ndarray,
+    affine: np.ndarray,
+    *,
+    fmriprep_dir: Path,
+    subject: str,
+    name: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Warp a native T1w-space volume into MNI; return (data, MNI affine).
+
+    NaNs mark the voxels outside the retained selection and would spread through
+    the interpolation, so they travel as zeros and are restored afterwards.
+
+    Nearest-neighbour interpolation keeps the sharp edge between retained and
+    discarded voxels: linear interpolation blurs it into a ramp down to zero,
+    which then paints a halo of sub-threshold values around every blob.
+
+    ``antsApplyTransforms`` is a CLI and can only read and write files, so the
+    input and output volumes are staged in a temporary directory and discarded
+    once the data has been read back.
+    """
+    exe = require_ants()
+    transform = find_t1w_to_mni_transform(fmriprep_dir, subject)
+    reference = find_mni_reference(fmriprep_dir, subject)
+
+    with tempfile.TemporaryDirectory(prefix="nc_warp_") as tmp:
+        src = Path(tmp) / f"{subject}_{name}_space-T1w.nii.gz"
+        dst = Path(tmp) / f"{subject}_{name}_space-{MNI_TEMPLATE_SPACE}.nii.gz"
+        nib.save(  # type: ignore[attr-defined]
+            nib.Nifti1Image(np.nan_to_num(volume).astype(np.float32), affine),  # type: ignore[attr-defined]
+            str(src),
+        )
+
+        cmd = [
+            exe,
+            "--dimensionality", "3",
+            "--input", str(src),
+            "--reference-image", str(reference),
+            "--transform", str(transform),
+            "--interpolation", "NearestNeighbor",
+            "--output", str(dst),
+            "--float", "1",
+        ]  # fmt: skip
+        logger.info(f"Warping {name} to {MNI_TEMPLATE_SPACE} (ref {reference.name})")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"antsApplyTransforms failed for {src.name}:\n{result.stderr}")
+
+        # nib.load is annotated as returning the generic FileBasedImage, which
+        # exposes neither get_fdata nor affine; this is always a NIfTI.
+        warped_img = cast("nib.Nifti1Image", nib.load(str(dst)))  # type: ignore[attr-defined]
+        warped = np.asarray(warped_img.get_fdata())
+        warped_affine = np.asarray(warped_img.affine)
+
+    warped[warped <= 0] = np.nan
+    return warped, warped_affine
+
+
+def load_fsaverage_surfaces(mesh: str) -> dict:
+    """fsaverage surfaces, keyed like :func:`load_native_surfaces`.
+
+    Used for the MNI figures so every subject is drawn on the same cortex.
+    """
+    logger.info(f"Loading fsaverage surfaces ({mesh})")
+    fsaverage = datasets.fetch_surf_fsaverage(mesh=mesh)
+    surfaces = {}
+    for hemisphere, suffix in [("left", "left"), ("right", "right")]:
+        surfaces[f"{hemisphere}_pial"] = fsaverage[f"pial_{suffix}"]
+        surfaces[f"{hemisphere}_inflated"] = fsaverage[f"infl_{suffix}"]
+        surfaces[f"{hemisphere}_sulc"] = fsaverage[f"sulc_{suffix}"]
+    return surfaces
+
+
 def load_native_surfaces(fmriprep_dir: Path, subject: str) -> dict:
     """Load subject-native FreeSurfer surfaces and sulcal depth from fMRIPrep outputs.
 
@@ -150,11 +292,16 @@ def project_to_surface_native(
     native_surfaces: dict,
 ) -> np.ndarray:
     """
-    Project volume data to subject's native surface.
+    Project volume data to the sampling surface.
 
     CRITICAL: Use pial surface for sampling (data extraction from voxels),
     NOT inflated. The inflated surface has different vertex coordinates
     and won't align with the voxel volume.
+
+    Uses nilearn's default ball sampling (3 mm radius around each pial vertex).
+    Restricting to the white–pial ribbon (``inner_mesh``) is the stricter choice
+    but yields a sparser map at every threshold, so the original behaviour is
+    kept here.
 
     Parameters
     ----------
@@ -181,7 +328,6 @@ def project_to_surface_native(
     # Create Nifti image with proper affine
     img = nib.Nifti1Image(volume_data, affine=affine)
 
-    # Use pial surface to extract data from voxels
     surface_data = surface.vol_to_surf(
         img,
         pial_surface,
@@ -192,91 +338,179 @@ def project_to_surface_native(
     return surface_data
 
 
-def _plot_modality_row(
-    axes_row: np.ndarray,
-    surface_data: dict,
+def project_selection_levels(
+    volume_data: np.ndarray,
+    cutoffs: dict[float, float],
     hemisphere: str,
-    modality: str,
-    percentiles: list[int],
-    fsaverage_meshes: dict,
-    sulc_data: dict,
-    cmap: str,
-) -> None:
-    """Helper: Plot one modality row across all percentiles into provided 3D axes."""
-    hemi = "left" if "left" in hemisphere.lower() else "right"
-    for col, percentile in enumerate(percentiles):
-        data = surface_data[hemisphere].copy()
-        threshold = np.nanpercentile(data, 100 - percentile)
-        masked = data.copy()
-        masked[~(data >= threshold)] = np.nan
+    affine: np.ndarray,
+    surfaces: dict,
+    coverage: float = 0.25,
+) -> dict[float, np.ndarray]:
+    """Project one volume at several selection levels as flat 0/1 masks.
 
-        plotting.plot_surf_stat_map(
-            surf_mesh=fsaverage_meshes[hemisphere],
-            stat_map=masked,
-            bg_map=sulc_data[hemisphere],
-            vmin=threshold,
-            vmax=np.nanmax(data),
-            cmap=cmap,
-            hemi=hemi,
-            view="lateral",
-            colorbar=False,
-            axes=axes_row[col],
+    Each level is the 0/1 selection mask of its cutoff, sampled onto the surface.
+    Sampling averages the voxels near each vertex, so what comes back is the
+    *fraction* of the vertex's neighbourhood inside the selection; a vertex covered
+    less than ``coverage`` is dropped. Without that cut, a vertex merely touching
+    the edge of a blob would still be drawn, painting a halo around every cluster.
+
+    Coverage grows monotonically with the level, by construction. A wider level has
+    a lower cutoff, so its voxel set contains the narrower one; a superset can only
+    raise each vertex's covered fraction, so the drawn vertices are nested too.
+
+    ``coverage`` decides how much of the cortex is drawn, and the answer is very
+    sensitive to it. For sub-03 text at the top-20% level, where 13% of grey matter
+    is selected in the volume, ball sampling renders 64% of vertices at
+    any-overlap, 19.5% at 0.25, 8.5% at 0.5 and 3.1% at 0.75. The 0.25 default
+    therefore mildly overstates the true extent, where 0.5 clearly understates it.
+
+    Returns
+    -------
+    dict[float, np.ndarray]
+        Per level, 1.0 at the vertices inside that selection and 0.0 elsewhere.
+    """
+    projected = {}
+    for percent, cutoff in cutoffs.items():
+        mask_volume = np.where(np.isfinite(volume_data) & (volume_data >= cutoff), 1.0, 0.0)
+        covered = project_to_surface_native(mask_volume, hemisphere, affine, surfaces)
+        selected = np.nan_to_num(covered) >= coverage
+        logger.info(
+            f"  {hemisphere} top {percent:g}%: {int(selected.sum())}/{len(selected)} vertices "
+            f"({100 * selected.mean():.1f}%) inside the selection"
         )
+        projected[percent] = selected.astype(np.float64)
+    return projected
+
+
+def nc_volume_and_cutoffs(
+    nc_1d: np.ndarray,
+    brain_mask_1d: np.ndarray,
+    percents: list[float],
+    spatial_dims: tuple[int, int, int],
+) -> tuple[np.ndarray, dict[float, float]]:
+    """Build the in-brain noise ceiling volume and the cutoff for each level.
+
+    Cutoffs come from :func:`select_top_nc_voxels`, the same rule the encoding
+    pipeline applies when it builds ``voxel_keep``, so the levels mark exactly the
+    voxels the models are fit on. They are computed in volume space, before any
+    warping, so the retained sets are defined on the data as acquired.
+
+    Only the cutoffs differ between levels, so a single volume carrying every
+    positive-NC voxel is returned and each level is a threshold on it. This holds
+    through a nearest-neighbour warp, which relabels voxels without changing their
+    values, so the volume can be warped once and thresholded afterwards.
+
+    Note that a level retains well under ``percent`` of the brain: the percentile
+    runs over voxels with a positive noise ceiling, which are only ~57% of the
+    brain mask, so "top 20%" keeps ~11.5% of in-brain voxels (~13% of grey matter).
+    "Top 100%" is therefore every positive-NC voxel, not literally every voxel.
+
+    Returns
+    -------
+    tuple
+        (3-D volume, {percent: NC cutoff}) — NaN outside the brain and wherever
+        the noise ceiling is not positive.
+    """
+    volume = np.full(nc_1d.shape, np.nan, dtype=np.float32)
+    in_brain = np.flatnonzero(brain_mask_1d)
+    in_brain_nc = nc_1d[in_brain]
+
+    cutoffs: dict[float, float] = {}
+    for percent in percents:
+        keep = select_top_nc_voxels(in_brain_nc, percent)
+        kept_values = in_brain_nc[keep]
+        cutoffs[percent] = float(np.nanmin(kept_values)) if kept_values.size else 0.0
+        logger.info(
+            f"  top {percent:g}%: {int(keep.sum())}/{len(in_brain)} in-brain voxels "
+            f"(NC >= {cutoffs[percent]:.1f}%)"
+        )
+
+    # The widest level defines which voxels the volume needs to carry at all.
+    widest = select_top_nc_voxels(in_brain_nc, max(percents))
+    volume[in_brain[widest]] = in_brain_nc[widest]
+    return volume.reshape(spatial_dims), cutoffs
 
 
 def plot_surface_modality_overlay(
     nc_vol_text: np.ndarray,
     nc_vol_image: np.ndarray,
     affine: np.ndarray,
-    percentiles: list[int],
+    percents: list[float],
     subject: str,
     native_surfaces: dict,
+    cutoffs: dict[str, dict[float, float]],
+    coverage: float = 0.25,
+    space: str = "native",
+    views: list[str] | None = None,
+    font_scale: float = 1.0,
+    row_spacing: float = -0.12,
     output_path: Path | None = None,
 ):
     """
-    Plot text and image noise ceiling on a single figure with multiple subplots.
+    Plot the voxels the encoding models were fit on, at several selection levels.
 
-    Creates a single figure with 4 rows (text-left, text-right, image-left, image-right)
-    and N columns (one per percentile threshold).
+    The grid has two rows per level — text then image — and hemisphere × view
+    columns, so three levels give six rows. Levels are separated by a rule and
+    labelled down the left-hand side.
+
+    ``nc_vol_*`` carry every positive-NC voxel, in the target space; each level is
+    a threshold on them (see :func:`nc_volume_and_cutoffs`).
+
+    Each panel is drawn in one flat colour per modality — the map is binary, not a
+    noise ceiling ramp — so the only thing that changes between levels is how much
+    cortex is painted, which is what the figure is for.
+
+    At the 20% level this covers ~13% of grey matter, not 20%: the analysis takes
+    20% of the *positive-NC* voxels, and those are only ~57% of the brain mask.
 
     Parameters
     ----------
     nc_vol_text : np.ndarray
-        3D noise ceiling volume for text stimuli
+        3D noise ceiling volume for text stimuli, in the target space
     nc_vol_image : np.ndarray
-        3D noise ceiling volume for image stimuli
+        Same for image stimuli.
     affine : np.ndarray
         Affine transformation matrix for the volume
-    percentiles : list[int]
-        List of percentiles to visualize (e.g., [10, 20, 30])
+    percents : list[float]
+        Selection levels, one group of two rows each, in the order given
     subject : str
         Subject identifier for title
     native_surfaces : dict
-        Dictionary of native surface file paths from load_native_surfaces()
+        Surface file paths from load_native_surfaces() or load_fsaverage_surfaces()
+    cutoffs : dict[str, dict[float, float]]
+        Per modality ("text"/"image"), the noise ceiling cutoff per level, from
+        :func:`nc_volume_and_cutoffs`
+    coverage : float
+        Minimum fraction of a vertex's neighbourhood that must be inside the
+        selection for it to be drawn
+    space : str
+        "native" or "mni", for the title only; the volumes must already be in it.
+    views : list[str] | None
+        Surface views per hemisphere (default ``["lateral", "medial"]``)
+    font_scale : float
+        Multiplier on every font size in the figure
+    row_spacing : float
+        ``hspace`` between rows. 3-D axes carry a lot of internal padding, so a
+        negative value is needed to bring the surfaces close together.
     output_path : Path | None
         Path to save figure
     """
+    from matplotlib.lines import Line2D
     import matplotlib.pyplot as plt
     import nibabel as nib
 
-    logger.info("Using native subject surfaces for projection")
-    # Project both modalities to native surfaces
-    logger.info("Projecting text noise ceiling to native surface...")
-    nc_surface_text_left = project_to_surface_native(nc_vol_text, "left", affine, native_surfaces)
-    nc_surface_text_right = project_to_surface_native(
-        nc_vol_text, "right", affine, native_surfaces
-    )
+    views = list(views) if views else ["lateral", "medial"]
 
-    logger.info("Projecting image noise ceiling to native surface...")
-    nc_surface_image_left = project_to_surface_native(
-        nc_vol_image, "left", affine, native_surfaces
-    )
-    nc_surface_image_right = project_to_surface_native(
-        nc_vol_image, "right", affine, native_surfaces
-    )
+    logger.info(f"Projecting the voxel selections to {space} surfaces")
+    projected: dict[tuple[str, str], dict[float, np.ndarray]] = {}
+    for modality, volume in [("text", nc_vol_text), ("image", nc_vol_image)]:
+        for hemi in ["left", "right"]:
+            projected[(modality, hemi)] = project_selection_levels(
+                volume, cutoffs[modality], hemi, affine, native_surfaces, coverage=coverage
+            )
 
-    # Load native sulcal depth for background
-    logger.info("Loading native surface geometry...")
+    # Load sulcal depth for background
+    logger.info("Loading surface geometry...")
     sulc_data = {}
     for hemi in ["left", "right"]:
         logger.debug(f"Loading sulcal depth for {hemi}...")
@@ -303,48 +537,102 @@ def plot_surface_modality_overlay(
         )
     logger.info("Surface geometry loaded ✓")
 
-    surface_text = {"left": nc_surface_text_left, "right": nc_surface_text_right}
-    surface_image = {"left": nc_surface_image_left, "right": nc_surface_image_right}
+    # Rows: (level, modality) pairs. Columns: hemisphere × view.
+    columns = [(hemi, view) for hemi in ["left", "right"] for view in views]
+    rows = [(percent, modality) for percent in percents for modality in ["text", "image"]]
+    cmaps = {m: ListedColormap([color]) for m, color in MODALITY_COLORS.items()}
 
-    # Create single figure with 4 rows x len(percentiles) columns
-    # Rows: Text-Left, Text-Right, Image-Left, Image-Right
-    logger.info(f"Creating figure with shape (4, {len(percentiles)})...")
+    logger.info(f"Creating figure with shape ({len(rows)}, {len(columns)})...")
     fig, axes = plt.subplots(
-        4, len(percentiles), figsize=(4 * len(percentiles), 16), subplot_kw={"projection": "3d"}
+        len(rows),
+        len(columns),
+        figsize=(4 * len(columns), 2.9 * len(rows)),
+        subplot_kw={"projection": "3d"},
+        squeeze=False,
+        gridspec_kw={"hspace": row_spacing, "wspace": 0.0},
     )
-    if len(percentiles) == 1:
-        axes = axes.reshape(4, 1)
 
     logger.info("Populating subplots...")
-    for row_offset, (modality, surface_data, cmap_color) in enumerate(
-        [("Text", surface_text, "Blues"), ("Image", surface_image, "Reds")]
-    ):
-        for hemi_idx, hemisphere in enumerate(["left", "right"]):
-            row_base = row_offset * 2 + hemi_idx
-            _plot_modality_row(
-                axes[row_base],
-                surface_data,
-                hemisphere,
-                modality,
-                percentiles,
-                fsaverage_meshes,
-                sulc_data,
-                cmap_color,
+    for row, (percent, modality) in enumerate(rows):
+        for col, (hemisphere, view) in enumerate(columns):
+            plotting.plot_surf_stat_map(
+                surf_mesh=fsaverage_meshes[hemisphere],
+                stat_map=projected[(modality, hemisphere)][percent],
+                bg_map=sulc_data[hemisphere],
+                # The map is 0/1 and the colormap is a single colour, so the scale
+                # only has to bracket it; `threshold` is what hides the zeros.
+                vmin=0.0,
+                vmax=1.0,
+                threshold=0.5,
+                # nilearn takes a Colormap here, but its unannotated `cmap="…"`
+                # default makes type checkers infer `str`.
+                cmap=cast("str", cmaps[modality]),
+                hemi=hemisphere,
+                view=view,
+                colorbar=False,
+                axes=axes[row, col],
             )
+            # `row_spacing` is negative, so neighbouring axes overlap. Their opaque
+            # backgrounds would then paint over the ventral edge of the row above,
+            # which reads as the brains being clipped.
+            axes[row, col].patch.set_alpha(0.0)
+            if row == 0:
+                axes[row, col].set_title(
+                    f"{hemisphere[0].upper()} {view}", fontsize=13 * font_scale, pad=0
+                )
+        axes[row, 0].text2D(
+            -0.04, 0.5, modality.capitalize(), transform=axes[row, 0].transAxes,
+            rotation=90, va="center", ha="center", fontsize=13 * font_scale,
+        )  # fmt: skip
 
+    space_label = MNI_TEMPLATE_SPACE if space == "mni" else "native T1w"
     fig.suptitle(
-        f"{subject} - Text vs Image Noise Ceiling by Threshold",
-        fontsize=14,
+        f"{subject} - most reliable voxels (encoding selection) per modality ({space_label})",
+        fontsize=17 * font_scale,
         fontweight="bold",
         y=0.995,
     )
-    fig.tight_layout(rect=(0, 0, 1, 0.99))
+    # `top` leaves the column headers clear of the title; the 3-D axes already
+    # carry enough internal padding that the other margins can be tight.
+    fig.subplots_adjust(left=0.09, right=0.99, top=0.925, bottom=0.01)
+
+    _annotate_level_groups(fig, axes, percents, font_scale, Line2D)
 
     if output_path:
         logger.info(f"Saving figure to {output_path}...")
         output_fig = output_path.parent / f"{output_path.stem}_modality-overlay.png"
         fig.savefig(output_fig, dpi=150, bbox_inches="tight")
         logger.success(f"Saved modality overlay plot to {output_fig}")
+
+
+def _annotate_level_groups(fig, axes, percents: list[float], font_scale: float, line_cls) -> None:
+    """Label each selection level down the left edge and rule between the groups.
+
+    Positions come from the axes bounding boxes, so this must run after the final
+    ``subplots_adjust``.
+    """
+    for group, percent in enumerate(percents):
+        top = axes[2 * group, 0].get_position()
+        bottom = axes[2 * group + 1, 0].get_position()
+        label = "All (NC > 0)" if percent >= 100 else f"Top {percent:g}%"
+
+        fig.text(
+            0.028,
+            (top.y1 + bottom.y0) / 2,
+            label,
+            rotation=90,
+            va="center",
+            ha="center",
+            fontsize=17 * font_scale,
+            fontweight="bold",
+        )
+
+        # Rule above every group but the first, midway into the gap left by the
+        # preceding group's last row.
+        if group:
+            previous = axes[2 * group - 1, 0].get_position()
+            y = (previous.y0 + top.y1) / 2
+            fig.add_artist(line_cls([0.02, 0.995], [y, y], color="0.75", linewidth=1.2, zorder=10))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -358,18 +646,31 @@ def plot_surface_modality_overlay(
     config_name="visualize_noise_ceiling",
 )
 def main(cfg: DictConfig) -> None:
-    """Generate noise ceiling surface plots for all subjects in subject-native T1w space."""
+    """Generate noise ceiling surface plots for all subjects, in MNI or native space."""
     logger.info(f"Configuration: {cfg}")
 
     glmsingle_dir = Path(cfg.glmsingle_dir)
     subject_filter = cfg.get("subject", None)  # Optional filter for specific subject
     fmriprep_dir = Path(cfg.get("fmriprep_dir", ""))
-    percentiles = cfg.get("percentiles", [5, 10, 15])
+    percents = [float(p) for p in cfg.get("percents", [20, 60, 100])]
+    if not percents:
+        raise ValueError("`percents` must list at least one selection level")
+    space = str(cfg.get("space", "mni")).lower()
+    if space not in {"mni", "native"}:
+        raise ValueError(f"space must be 'mni' or 'native', got {space!r}")
+    views = list(cfg.get("views", ["lateral", "medial"]))
+    coverage = float(cfg.get("selection_coverage", 0.25))
+    font_scale = float(cfg.get("font_scale", 1.0))
+    row_spacing = float(cfg.get("row_spacing", -0.12))
     output_dir_cfg = cfg.get("output_dir")
     output_dir = (
         Path(output_dir_cfg) if output_dir_cfg is not None else FIGURES_DIR / "noise_ceiling"
     )
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Fail before the expensive beta loading if ANTs is missing.
+    if space == "mni":
+        require_ants()
 
     # Find all subjects in glmsingle_dir
     subject_dirs = sorted(
@@ -429,15 +730,15 @@ def main(cfg: DictConfig) -> None:
             f"Applied brain mask. In-brain noise ceiling range: [{np.nanmin(nc_1d):.1f}, {np.nanmax(nc_1d):.1f}]%"
         )
 
-        # Create visualization - Native space only
-        logger.info("Creating surface plots in subject-native T1w space...")
+        logger.info(f"Creating surface plots in {space} space...")
 
-        # Reshape noise ceiling back to 3D volume for surface projection
-        x, y, z = spatial_dims
-
-        # Load native surfaces for this subject
-        native_surfaces = load_native_surfaces(fmriprep_dir, subject)
-        logger.info(f"Loaded native surfaces for {subject}")
+        # Load the surfaces the maps are displayed on: the subject's own cortex
+        # for native space, the shared fsaverage cortex for MNI.
+        if space == "mni":
+            surfaces = load_fsaverage_surfaces(str(cfg.get("fsaverage_mesh", "fsaverage6")))
+        else:
+            surfaces = load_native_surfaces(fmriprep_dir, subject)
+            logger.info(f"Loaded native surfaces for {subject}")
 
         # ===== Per-Modality Analysis =====
         # Load design matrix mapping to separate text and image stimuli
@@ -469,29 +770,47 @@ def main(cfg: DictConfig) -> None:
 
             nc_by_modality[modality] = nc_modality
 
-        # Reshape to 3D volumes
-        nc_vol_text = nc_by_modality["text"].reshape(x, y, z)
-        nc_vol_image = nc_by_modality["image"].reshape(x, y, z)
+        suffix = "" if space == "native" else f"_space-{MNI_TEMPLATE_SPACE}"
 
-        # Create overlay plot (native surfaces only)
-        logger.info("Creating modality overlay surface plots...")
-        output_fig_overlay = output_dir / f"{subject}_noise_ceiling_modality_overlay.png"
+        # Cutoffs are percentiles of the native data, so they are computed before
+        # warping. The warp is nearest-neighbour and so preserves voxel values,
+        # which lets one volume per modality carry every level.
+        levels = ", ".join(f"{p:g}%" for p in percents)
+        logger.info(f"Selecting the most reliable voxels per modality at {levels}...")
+        plot_volumes, cutoffs = {}, {}
+        for modality in ["text", "image"]:
+            plot_volumes[modality], cutoffs[modality] = nc_volume_and_cutoffs(
+                nc_by_modality[modality], brain_mask_1d, percents, spatial_dims
+            )
 
-        logger.info("Projecting modality data to native surfaces...")
+        plot_affine = affine
+        if space == "mni":
+            for modality in ["text", "image"]:
+                plot_volumes[modality], plot_affine = warp_volume_to_mni(
+                    plot_volumes[modality],
+                    affine,
+                    fmriprep_dir=fmriprep_dir,
+                    subject=subject,
+                    name=f"nc_{modality}",
+                )
+
         plot_surface_modality_overlay(
-            nc_vol_text=nc_vol_text,
-            nc_vol_image=nc_vol_image,
-            affine=affine,
-            percentiles=percentiles,
+            nc_vol_text=plot_volumes["text"],
+            nc_vol_image=plot_volumes["image"],
+            affine=plot_affine,
+            percents=percents,
             subject=subject,
-            output_path=output_fig_overlay,
-            native_surfaces=native_surfaces,
+            output_path=output_dir / f"{subject}_noise_ceiling{suffix}_voxelsel.png",
+            native_surfaces=surfaces,
+            cutoffs=cutoffs,
+            coverage=coverage,
+            space=space,
+            views=views,
+            font_scale=font_scale,
+            row_spacing=row_spacing,
         )
 
-        logger.success(
-            f"Modality overlay visualization complete for {subject}. "
-            f"Saved to {output_fig_overlay.parent}"
-        )
+        logger.success(f"Surface visualization complete for {subject} → {output_dir}")
 
 
 if __name__ == "__main__":

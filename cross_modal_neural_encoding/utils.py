@@ -431,6 +431,38 @@ def load_design_matrix_mapping(design_mapping_file: Path) -> dict[int, str]:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def select_top_nc_voxels(nc_ceiling: np.ndarray, nc_top_percent: float) -> np.ndarray:
+    """Boolean mask of the ``nc_top_percent`` most reliable voxels.
+
+    The percentile is taken over the voxels with a *positive* noise ceiling only,
+    so the retained fraction of all supplied voxels is smaller than
+    ``nc_top_percent``.  Shared by the encoding pipeline and the noise ceiling
+    visualisation so both always mark the same voxels.
+
+    Parameters
+    ----------
+    nc_ceiling : (n_voxels,)
+        Noise ceiling per voxel, on any monotone scale (NC % or NC correlation).
+    nc_top_percent : float
+        Percentage of positive-NC voxels to keep.  ``<= 0`` keeps every finite
+        voxel.
+
+    Returns
+    -------
+    np.ndarray
+        Boolean mask over ``nc_ceiling``.
+    """
+    if nc_top_percent <= 0:
+        return np.isfinite(nc_ceiling)
+
+    valid_nc = np.isfinite(nc_ceiling) & (nc_ceiling > 0)
+    if not valid_nc.any():
+        return np.isfinite(nc_ceiling)
+
+    cutoff = np.nanpercentile(nc_ceiling[valid_nc], 100.0 - nc_top_percent)
+    return valid_nc & (nc_ceiling >= cutoff)
+
+
 def build_fmri_cache(
     events_df: pd.DataFrame,
     *,
@@ -460,12 +492,7 @@ def build_fmri_cache(
 
         n_in_brain = brain_mask.sum()
         if nc_top_percent > 0:
-            valid_nc = np.isfinite(nc_ceiling) & (nc_ceiling > 0)
-            if valid_nc.any():
-                cutoff = np.nanpercentile(nc_ceiling[valid_nc], 100.0 - nc_top_percent)
-                voxel_keep = valid_nc & (nc_ceiling >= cutoff)
-            else:
-                voxel_keep = np.isfinite(nc_ceiling)
+            voxel_keep = select_top_nc_voxels(nc_ceiling, nc_top_percent)
             nc_ceiling = nc_ceiling[voxel_keep]
         else:
             voxel_keep = np.ones(n_in_brain, dtype=bool)

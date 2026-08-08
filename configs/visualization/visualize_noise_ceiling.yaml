@@ -28,9 +28,49 @@ design_matrix_mapping_file: "/project/def-afyshe-ab/hbalabin/comp_fmri_study_202
 subject: null
 
 # ── Analysis Parameters ───────────────────────────────────────
-# Percentiles of noise ceiling to visualize (top N%)
-percentiles: [10, 20, 30]
+# Selection levels to show, one group of two rows (text, image) each, in this
+# order. 20 matches nc_top_percent in configs/modeling/neural_encoding.yaml, i.e.
+# the voxels the encoding models are actually fit on; the wider levels give the
+# context around them.
+#
+# The percentile runs over voxels with a POSITIVE noise ceiling, which are only
+# ~57% of the brain mask — so "top 20%" retains ~11.5% of in-brain voxels (~13% of
+# grey matter), and a level of 100 would mean every positive-NC voxel rather than
+# every voxel. On the surface these render as roughly 19%, 39% and 60% of vertices
+# (sub-02, left hemisphere, text); a level of 100 would reach ~80%.
+percents: [20, 40, 60]
 
+# Minimum fraction of a vertex's sampled neighbourhood that must fall inside the
+# selection for that vertex to be drawn. Strongly affects how much cortex appears —
+# for sub-03 text (13% of grey matter selected in the volume) this renders 64% of
+# vertices at ~0, 19.5% at 0.25, 8.5% at 0.5, 3.1% at 0.75.
+selection_coverage: 0.25
+
+# ── Target Space ──────────────────────────────────────────────
+# "mni"    : warp to MNI152NLin2009cAsym (fMRIPrep T1w→MNI warp, antsApplyTransforms)
+#            and render on fsaverage, so subjects are directly comparable.
+#            Requires ANTs: module load gcc/12.3 ants/2.6.5
+# "native" : render on the subject's own FreeSurfer surfaces (not comparable
+#            across subjects)
+space: "mni"
+
+# fsaverage mesh for the MNI figures. "fsaverage6" (~40k vertices per hemisphere)
+# renders the 2 mm functional data at full effective resolution much faster than
+# the 164k "fsaverage".
+fsaverage_mesh: "fsaverage6"
+
+# Surface views rendered per hemisphere
+views: ["lateral", "medial"]
+
+# Multiplier on every font size in the figure
+font_scale: 1.3
+
+# Vertical gap between rows. 3-D axes carry a lot of internal padding, so a
+# negative value is needed to pull the surfaces together; make it more negative
+# to tighten further.
+row_spacing: -0.25
+
+# ── Noise Ceiling ─────────────────────────────────────────────
 # Number of repetitions assumed averaged when converting NCSNR -> NC.
 # Use 6 to match six-repeat averaging.
 nc_num_averages: 6
@@ -44,10 +84,10 @@ hemispheres: ["left", "right"]
 # Defaults to reports/figures/noise_ceiling if not specified
 output_dir: null
 
-# ── Colormaps ─────────────────────────────────────────────────
-# Colormap for surface plots
-# Options: "viridis", "hot", "cool", "RdYlBu_r", "jet", etc.
-cmap: "hot"
+# ── Colours ───────────────────────────────────────────────────
+# Not configurable: each modality is drawn in one flat colour from the project
+# palette (text blue, image red — see MODALITY_COLORS in the script). The overlay
+# is a binary selection mask, so there is no value ramp to choose a colormap for.
 
 # ── Verbosity ─────────────────────────────────────────────────
 # Log level: DEBUG, INFO, WARNING, ERROR
