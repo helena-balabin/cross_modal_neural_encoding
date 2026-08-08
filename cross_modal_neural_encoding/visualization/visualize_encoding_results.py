@@ -83,6 +83,24 @@ TEXT_MODEL_PALETTE = [
     "#8FBFD4",  # steel blue
     "#A3D2E2",  # pale aqua
 ]
+# Neutral body for the condition violins — the overlaid per-model points carry
+# the (category) colour coding, so the violin itself stays quiet.
+VIOLIN_BODY_COLOR = "#C7CFDB"
+# One representative colour per model category, matching the category palettes
+# used for the grouped bars (VLM = purple, vision-only = red, text-only = blue).
+CATEGORY_POINT_COLORS = {0: "#906EBA", 1: "#D96F6F", 2: "#6F9FC9"}
+CATEGORY_LABELS = {0: "Vision–language", 1: "Vision-only", 2: "Text-only"}
+# Model families: size variants of the same checkpoint collapse into one family.
+# Matched as substrings of the short (vendor-stripped) model label, lower-cased.
+MODEL_FAMILY_PATTERNS: tuple[tuple[str, str], ...] = (
+    ("internvl", "InternVL3.5"),
+    ("qwen", "Qwen3.5"),
+    ("clip", "CLIP"),
+    ("dinov2", "DINOv2"),
+    ("ijepa", "I-JEPA"),
+    ("pythia", "Pythia"),
+    ("opt-", "OPT"),
+)
 COLD_SUBJECT_PALETTE = [
     "#A8C8E8",  # cold pastel blue
     "#93C8C8",  # cold pastel teal
@@ -127,6 +145,99 @@ def _model_category_rank(model_label: str) -> tuple[int, str]:
     if any(tag in label for tag in ("dinov2", "ijepa", "dino")):
         return (1, model_label)
     return (2, model_label)
+
+
+def model_family(model_label: str) -> str:
+    """Family a model belongs to, collapsing size variants into one name.
+
+    E.g. ``OpenGVLab--InternVL3_5-1B-HF`` and ``…-8B-HF`` both map to
+    ``InternVL3.5``. Checkpoints that match no known pattern stay their own
+    family — merging them on a guessed name pattern would silently drop models.
+    """
+    short = short_model_label(model_label)
+    lowered = short.lower()
+    for pattern, family in MODEL_FAMILY_PATTERNS:
+        if pattern in lowered:
+            return family
+    return short
+
+
+def select_best_per_family(
+    model_results: list[dict[str, Any]],
+    *,
+    metric: str,
+) -> list[dict[str, Any]]:
+    """Keep only the best-scoring model of each family.
+
+    "Best" is the highest mean of *metric* across the conditions that model was
+    run on (family members share a condition set, so the average is comparable
+    within a family). Models without a usable value are dropped. The surviving
+    models keep their input order.
+    """
+    best: dict[str, tuple[float, int]] = {}
+    for idx, item in enumerate(model_results):
+        df = item["aggregated_df"]
+        try:
+            column = np.asarray(df[(metric, "mean")], dtype=float)
+        except KeyError:
+            logger.warning(f"Skipping {item['model_label']}: no '{metric}' column.")
+            continue
+        if not np.any(np.isfinite(column)):
+            continue
+        score = float(np.nanmean(column))
+        family = model_family(item["model_label"])
+        current = best.get(family)
+        if current is None or score > current[0]:
+            best[family] = (score, idx)
+
+    keep = {idx for _, idx in best.values()}
+    for family, (score, idx) in sorted(best.items()):
+        logger.info(
+            f"Best in family {family}: {model_results[idx]['model_label']} "
+            f"(mean {metric} = {score:.4f})"
+        )
+    return [item for idx, item in enumerate(model_results) if idx in keep]
+
+
+def _model_condition_matrix(
+    model_results: list[dict[str, Any]],
+    conditions: list[str],
+    metric: str,
+) -> np.ndarray:
+    """``(n_models, n_conditions)`` matrix of per-model group means.
+
+    Conditions a model was not run on stay ``NaN``.
+    """
+    values = np.full((len(model_results), len(conditions)), np.nan, dtype=float)
+    for i, item in enumerate(model_results):
+        df = item["aggregated_df"]
+        for j, cond in enumerate(conditions):
+            if cond not in df.index:
+                continue
+            values[i, j] = float(df.loc[cond, (metric, "mean")])
+    return values
+
+
+def _legend_y_below_xticklabels(fig, ax, *, fallback: float, nudge: float) -> float:
+    """Axes-fraction y just below the *rendered* x-tick labels.
+
+    Keeps a legend clear of multi-line/rotated condition labels however short the
+    figure gets; falls back to a fixed offset when no renderer is available.
+    """
+    try:
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()  # type: ignore
+        inv_axes = ax.transAxes.inverted()
+        label_bottom = min(
+            (
+                inv_axes.transform((0.0, lbl.get_window_extent(renderer=renderer).y0))[1]
+                for lbl in ax.get_xticklabels()
+            ),
+            default=fallback,
+        )
+    except Exception:  # pragma: no cover - renderer unavailable
+        return fallback
+    return label_bottom + nudge
 
 
 def load_aggregated(path: str | Path) -> pd.DataFrame:
@@ -893,13 +1004,7 @@ def plot_grouped_model_means(
     n_models = len(model_labels)
     n_conditions = len(conditions)
 
-    values = np.full((n_models, n_conditions), np.nan, dtype=float)
-    for i, item in enumerate(model_results):
-        df = item["aggregated_df"]
-        for j, cond in enumerate(conditions):
-            if cond not in df.index:
-                continue
-            values[i, j] = float(df.loc[cond, (metric, "mean")])
+    values = _model_condition_matrix(model_results, conditions, metric)
 
     pvals = np.full((n_models, n_conditions), np.nan, dtype=float)
     for i, item in enumerate(model_results):
@@ -1247,6 +1352,214 @@ def plot_grouped_model_means(
     plt.close(fig)
 
 
+def plot_condition_violins(
+    model_results: list[dict[str, Any]],
+    *,
+    metric: str,
+    alpha: float,
+    font_scale: float,
+    output_path: Path | None,
+    figsize: tuple[float, float],
+    y_limits: tuple[float, float] | None = None,
+    group_sig_correction: str = "fdr_bh",
+    title: str = "Condition Comparison Across All Models",
+    condition_labels: dict[str, str] | None = None,
+) -> None:
+    """Collapse all models into one violin per condition.
+
+    Each violin is the distribution, over models, of the per-model group mean —
+    exactly the quantity the grouped bar figure draws as one bar — so the two
+    figures show the same numbers at different granularity. Every model is
+    overlaid as a jittered point coloured by its category, and the conditions are
+    compared with the same paired Wilcoxon signed-rank tests as the grouped
+    figure (models are the pairing unit), drawn as brackets above the violins.
+
+    Models are not run on every condition (text-only models have no image
+    conditions and vice versa), so the violins do not all summarise the same set
+    of models; the per-condition model count is printed under each x label.
+    """
+    if len(model_results) < 2:
+        logger.warning("Condition violin plot requires at least two models.")
+        return
+
+    model_results = sorted(
+        model_results,
+        key=lambda item: _model_category_rank(item.get("model_label", "")),
+    )
+
+    all_conditions: set[str] = set()
+    for item in model_results:
+        all_conditions.update(item["aggregated_df"].index)
+    if not all_conditions:
+        logger.warning("No conditions found across models to plot.")
+        return
+
+    conditions = _condition_order_from_index(all_conditions)
+    label_map = condition_labels if condition_labels is not None else CONDITION_LABELS
+    values = _model_condition_matrix(model_results, conditions, metric)
+    if not np.any(np.isfinite(values)):
+        logger.warning("No finite values available for the condition violin plot.")
+        return
+
+    categories = [_model_category_rank(item["model_label"])[0] for item in model_results]
+    is_normalized_metric = "normalized" in metric.lower()
+    n_conditions = len(conditions)
+    x = np.arange(n_conditions)
+    datasets = [values[np.isfinite(values[:, j]), j] for j in range(n_conditions)]
+    labels = [
+        f"{label_map.get(c, c)}\n(n = {d.size} models)" for c, d in zip(conditions, datasets)
+    ]
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # ── Violin bodies ─────────────────────────────────────────────────────
+    # A KDE needs at least two distinct points; conditions with fewer models
+    # are shown by their overlaid points alone.
+    violin_idx = [j for j, d in enumerate(datasets) if d.size >= 2 and np.ptp(d) > 0]
+    tops = np.array([np.nanmax(d) if d.size else np.nan for d in datasets], dtype=float)
+    bottoms = np.array([np.nanmin(d) if d.size else np.nan for d in datasets], dtype=float)
+    if violin_idx:
+        parts = ax.violinplot(
+            [datasets[j] for j in violin_idx],
+            positions=x[violin_idx],
+            widths=0.72,
+            showextrema=False,
+            showmedians=False,
+        )
+        for body, j in zip(parts["bodies"], violin_idx):  # type: ignore[arg-type]
+            body.set_facecolor(VIOLIN_BODY_COLOR)
+            body.set_edgecolor("#4A4A4A")
+            body.set_linewidth(0.8)
+            body.set_alpha(0.75)
+            # The KDE tails, not the data range, set how far the drawing extends.
+            vertices = body.get_paths()[0].vertices[:, 1]
+            tops[j] = max(tops[j], float(np.max(vertices)))
+            bottoms[j] = min(bottoms[j], float(np.min(vertices)))
+
+    # ── Per-model points ──────────────────────────────────────────────────
+    # Deterministic jitter so the figure is reproducible across regenerations.
+    rng = np.random.default_rng(0)
+    seen_categories: set[int] = set()
+    for i, category in enumerate(categories):
+        finite = np.isfinite(values[i])
+        if not np.any(finite):
+            continue
+        jitter = rng.uniform(-0.12, 0.12, size=int(finite.sum()))
+        label = (
+            CATEGORY_LABELS.get(category, "Other") if category not in seen_categories else None
+        )
+        seen_categories.add(category)
+        ax.scatter(
+            x[finite] + jitter,
+            values[i, finite],
+            s=26,
+            color=CATEGORY_POINT_COLORS.get(category, GROUP_BAR_COLOR),
+            edgecolor="#3A3A3A",
+            linewidth=0.4,
+            alpha=0.9,
+            zorder=4,
+            label=label,
+        )
+
+    # ── Medians ───────────────────────────────────────────────────────────
+    for j, d in enumerate(datasets):
+        if d.size == 0:
+            continue
+        ax.hlines(
+            float(np.median(d)),
+            x[j] - 0.22,
+            x[j] + 0.22,
+            color="#2B2B2B",
+            linewidth=1.8,
+            zorder=5,
+        )
+
+    # ── Axes formatting ───────────────────────────────────────────────────
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, fontsize=9 * font_scale, rotation=0, ha="center")
+    ax.tick_params(axis="y", labelsize=12 * font_scale)
+    if is_normalized_metric:
+        ax.set_ylabel("Normalized performance\n(r / NC)", fontsize=10 * font_scale)
+    else:
+        ax.set_ylabel("Pearson correlation", fontsize=10 * font_scale)
+    ax.set_title(title, fontsize=15 * font_scale, fontweight="bold")
+    ax.axhline(y=0, color="black", linewidth=0.5, zorder=1)
+    ax.grid(axis="y", alpha=0.3, zorder=0)
+    ax.margins(x=0.03)
+
+    if y_limits is None:
+        finite_tops = tops[np.isfinite(tops)]
+        finite_bottoms = bottoms[np.isfinite(bottoms)]
+        lower = float(np.min(finite_bottoms))
+        upper = float(np.max(finite_tops))
+        span = max(upper - lower, 0.03)
+        y_min, y_max = min(-0.01, lower - 0.06 * span), upper + 0.08 * span
+    else:
+        y_min, y_max = y_limits
+    # Headroom for the note strip under the lowest violin.
+    y_min -= 0.14 * (y_max - y_min)
+    ax.set_ylim(y_min, y_max)
+
+    note_text = "One point = one model   ·   line = median   ·   brackets: pairwise signed-rank"
+    if group_sig_correction == "fdr_bh":
+        note_text += " (BH-FDR)"
+    ax.text(
+        0.01,
+        0.02,
+        note_text,
+        transform=ax.transAxes,
+        ha="left",
+        va="bottom",
+        fontsize=7 * font_scale,
+        color="#333333",
+        zorder=6,
+    )
+
+    legend_fs = 10.5 * font_scale
+    handles, legend_labels = ax.get_legend_handles_labels()
+    category_legend = None
+    if handles:
+        category_legend = ax.legend(
+            handles,
+            legend_labels,
+            loc="upper center",
+            bbox_to_anchor=(
+                0.5,
+                _legend_y_below_xticklabels(fig, ax, fallback=-0.20, nudge=-0.05),
+            ),
+            fontsize=legend_fs,
+            ncol=_legend_ncol(legend_labels, figsize[0], legend_fs, len(legend_labels)),
+            frameon=False,
+            columnspacing=1.4,
+            handletextpad=0.5,
+        )
+
+    # Same test (and same pairing unit) as the grouped bar figure, so the
+    # brackets carry over unchanged.
+    pair_q = pairwise_condition_signrank(values, correction=group_sig_correction)
+    annotate_pairwise_brackets(
+        ax,
+        x_positions=x,
+        values=tops,
+        pair_qvalues=pair_q,
+        alpha=alpha,
+        font_scale=font_scale,
+    )
+
+    if output_path is None:
+        output_path = FIGURES_DIR / "encoding_results_condition_violins.png"
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(
+        output_path,
+        dpi=300,
+        bbox_inches="tight",
+        bbox_extra_artists=() if category_legend is None else (category_legend,),
+    )
+    logger.success(f"Condition-violin figure saved to {output_path}")
+    plt.close(fig)
+
+
 def plot_subject_mean_across_models(
     model_results: list[dict[str, Any]],
     *,
@@ -1560,6 +1873,51 @@ def main(cfg: DictConfig) -> None:
             group_sig_random_state=int(cfg.get("group_sig_random_state", 42)),
             group_sig_correction=group_sig_correction,
             show_error_bars=bool(cfg.get("show_error_bars", True)),
+        )
+
+    if bool(cfg.get("plot_best_per_family", True)):
+        best_results = select_best_per_family(model_results, metric=cfg.metric)
+        best_output = (
+            Path(cfg.best_per_family_output_path)
+            if cfg.get("best_per_family_output_path", None)
+            else FIGURES_DIR / "encoding_results_best_per_family_grouped.png"
+        )
+        plot_grouped_model_means(
+            best_results,
+            metric=cfg.metric,
+            alpha=cfg.alpha,
+            font_scale=font_scale,
+            compress_normalized_axis=compress_normalized_axis,
+            normalized_axis_linthresh=normalized_axis_linthresh,
+            output_path=best_output,
+            figsize=tuple(
+                cfg.get("best_per_family_figsize", cfg.get("grouped_figsize", cfg.figsize))
+            ),
+            y_limits=shared_y_limits,
+            group_sig_permutations=int(cfg.get("group_sig_permutations", 10000)),
+            group_sig_random_state=int(cfg.get("group_sig_random_state", 42)),
+            group_sig_correction=group_sig_correction,
+            show_error_bars=bool(cfg.get("show_error_bars", True)),
+            title="Best Model per Family Based on Group Means",
+        )
+
+    if bool(cfg.get("plot_condition_violins", True)):
+        violin_y_limits_cfg = cfg.get("violin_y_limits", None)
+        plot_condition_violins(
+            model_results,
+            metric=cfg.metric,
+            alpha=cfg.alpha,
+            font_scale=font_scale,
+            output_path=(
+                Path(cfg.violin_output_path) if cfg.get("violin_output_path", None) else None
+            ),
+            figsize=tuple(cfg.get("violin_figsize", cfg.figsize)),
+            y_limits=(
+                (float(violin_y_limits_cfg[0]), float(violin_y_limits_cfg[1]))
+                if violin_y_limits_cfg is not None
+                else None
+            ),
+            group_sig_correction=group_sig_correction,
         )
 
     if bool(cfg.get("plot_subject_mean_across_models", True)):
