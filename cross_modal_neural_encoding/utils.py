@@ -463,6 +463,53 @@ def select_top_nc_voxels(nc_ceiling: np.ndarray, nc_top_percent: float) -> np.nd
     return valid_nc & (nc_ceiling >= cutoff)
 
 
+def select_shared_nc_voxels(
+    nc_corr_by_modality_in_brain: dict[str, np.ndarray],
+    nc_top_percent: float,
+) -> np.ndarray:
+    """Boolean mask of voxels in the top ``nc_top_percent`` of *every* modality.
+
+    Intersects the per-modality masks of :func:`select_top_nc_voxels` (e.g. top
+    20% image ∩ top 20% text), giving one voxel set that every encoding
+    condition can be fit on.  Because the two modality-specific noise ceilings
+    only partly overlap, the intersection is considerably smaller than
+    ``nc_top_percent`` of the in-brain voxels.
+
+    Parameters
+    ----------
+    nc_corr_by_modality_in_brain : dict
+        Modality → per-voxel noise ceiling, already restricted to in-brain
+        voxels (all arrays must share the same length).
+    nc_top_percent : float
+        Percentage of positive-NC voxels kept per modality before intersecting.
+
+    Returns
+    -------
+    np.ndarray
+        Boolean mask over the in-brain voxels.
+    """
+    if not nc_corr_by_modality_in_brain:
+        raise ValueError("nc_corr_by_modality_in_brain is empty; cannot intersect.")
+
+    masks = {
+        modality: select_top_nc_voxels(nc, nc_top_percent)
+        for modality, nc in sorted(nc_corr_by_modality_in_brain.items())
+    }
+    shared = np.logical_and.reduce(list(masks.values()))
+
+    per_modality = ", ".join(f"{m}={int(mask.sum())}" for m, mask in masks.items())
+    logger.info(
+        f"  Shared NC voxel set (top {nc_top_percent:g}% of each modality, "
+        f"intersected): {per_modality} → {int(shared.sum())} shared voxels"
+    )
+    if not shared.any():
+        raise ValueError(
+            f"Shared NC voxel set is empty at nc_top_percent={nc_top_percent:g} "
+            f"(per-modality counts: {per_modality})."
+        )
+    return shared
+
+
 def build_fmri_cache(
     events_df: pd.DataFrame,
     *,
@@ -471,9 +518,25 @@ def build_fmri_cache(
     nc_corr_by_modality_full: dict[str, np.ndarray],
     conditions: dict,
     nc_top_percent: float = 0.0,
+    nc_shared_voxels: bool = False,
     log: bool = False,
 ) -> dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
-    """Build per-modality fMRI cache with optional NC top-percentile filtering."""
+    """Build per-modality fMRI cache with optional NC top-percentile filtering.
+
+    With ``nc_shared_voxels=False`` (default) each fMRI modality keeps its own
+    top-``nc_top_percent`` voxels, so image and text conditions are fit on
+    different voxels.  With ``nc_shared_voxels=True`` every modality is
+    restricted to the *same* voxels — the intersection of the per-modality
+    top-``nc_top_percent`` masks (see :func:`select_shared_nc_voxels`) — while
+    noise-ceiling normalisation still uses each modality's own NC values.
+    """
+    shared_keep: np.ndarray | None = None
+    if nc_shared_voxels:
+        shared_keep = select_shared_nc_voxels(
+            {m: nc[brain_mask] for m, nc in nc_corr_by_modality_full.items()},
+            nc_top_percent,
+        )
+
     fmri_cache: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
     for fmri_mod in {c["fmri_modality"] for c in conditions.values()}:
         mod_df = events_df[events_df["modality"] == fmri_mod]
@@ -491,7 +554,10 @@ def build_fmri_cache(
         nc_ceiling = nc_corr_by_modality_full[fmri_mod][brain_mask]
 
         n_in_brain = brain_mask.sum()
-        if nc_top_percent > 0:
+        if shared_keep is not None:
+            voxel_keep = shared_keep
+            nc_ceiling = nc_ceiling[voxel_keep]
+        elif nc_top_percent > 0:
             voxel_keep = select_top_nc_voxels(nc_ceiling, nc_top_percent)
             nc_ceiling = nc_ceiling[voxel_keep]
         else:

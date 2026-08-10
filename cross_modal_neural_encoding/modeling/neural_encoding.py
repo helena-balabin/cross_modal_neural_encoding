@@ -744,6 +744,7 @@ def main(cfg: DictConfig) -> None:
     n_outer_folds: int = int(cfg.get("n_outer_folds", 1))
     test_size: float = cfg.test_size
     nc_top_percent: float = float(cfg.get("nc_top_percent", 0.0))
+    nc_shared_voxels: bool = bool(cfg.get("nc_shared_voxels", False))
     nc_num_averages: float = float(cfg.get("nc_num_averages", 6))
     design_matrix_mapping_file = Path(cfg.get("design_matrix_mapping_file", ""))
     frac_grid: np.ndarray = np.asarray(
@@ -926,6 +927,7 @@ def main(cfg: DictConfig) -> None:
             nc_corr_by_modality_full=nc_corr_by_modality_full,
             conditions=conditions,
             nc_top_percent=nc_top_percent,
+            nc_shared_voxels=nc_shared_voxels,
             log=True,
         )
 
@@ -1042,6 +1044,8 @@ def main(cfg: DictConfig) -> None:
                     "n_test_stimuli": result.get("n_test_stimuli", np.nan),
                     "n_outer_folds": result.get("n_outer_folds", np.nan),
                     "n_voxels": Y.shape[1],
+                    "nc_top_percent": nc_top_percent,
+                    "nc_shared_voxels": nc_shared_voxels,
                     "mean_r": result["mean_r"],
                     "mean_noise_ceiling_r": result.get("mean_noise_ceiling_r", np.nan),
                     "max_noise_ceiling_r": result.get("max_noise_ceiling_r", np.nan),

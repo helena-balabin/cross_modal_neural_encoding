@@ -45,6 +45,13 @@ n_pca_components: 50
 # (DESIGNINFO stimorder + design_matrix_mapping_file).
 nc_top_percent: 20
 
+# Use ONE voxel set for all conditions instead of modality-specific ones:
+# the intersection of the top nc_top_percent image voxels and the top
+# nc_top_percent text voxels.  NC normalization still uses each fMRI
+# modality's own noise ceiling; only the voxel set changes.  The intersection
+# is much smaller than nc_top_percent of the in-brain voxels.
+nc_shared_voxels: false
+
 # Number of repetitions assumed averaged when converting NCSNR -> NC.
 # Use 6 to match test-time averaging across six repeats per stimulus.
 nc_num_averages: 6
