@@ -1038,6 +1038,12 @@ def main(cfg: DictConfig) -> None:
                     "condition": cond_name,
                     "embed_modality": emod,
                     "fmri_modality": fmod,
+                    # Layer provenance: the output path carries no layer token, so
+                    # a layer sweep can only tell its runs apart from these columns.
+                    # embed_layer is the one this condition actually used.
+                    "vision_layer": vision_layer,
+                    "text_layer": text_layer,
+                    "embed_layer": layer_for_modality[emod],
                     "n_trials": X.shape[0],
                     "n_unique_stimuli": n_unique,
                     "n_train_stimuli": result.get("n_train_stimuli", np.nan),

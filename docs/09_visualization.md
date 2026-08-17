@@ -148,6 +148,44 @@ for any group analysis.
 
 ---
 
+## Layer-Depth Curves
+
+**Script:** `cross_modal_neural_encoding/visualization/visualize_layer_sweep.py`
+
+**Purpose:** Show how encoding performance depends on **which layer** the embeddings come from. Every other figure uses one hard-coded middle layer per encoder (`floor(n_layers / 2)`); this one re-runs the same analysis at every layer of the best-performing model (Qwen3.5-9B-Base) so the depth dependence, and the position of the peak relative to that middle layer, are visible.
+
+**Data input:** the sweep from `scripts/neural_encoding_layer_sweep.sh` — one `<modality>_layer_<idx>/` directory per layer, each holding a normal `<model>/summary.csv` plus the per-subject `null_mean_r.npy` files. The layer is read from the `embed_layer` / `vision_layer` / `text_layer` columns that the encoding pipeline writes into `summary.csv`, not from the directory name.
+
+**Run:** `sbatch --export=ALL,JOBID=<array job id> scripts/visualize_layer_sweep.sh`, which also copies the CSVs and permutation nulls off `$SCRATCH` first.
+
+### Layout: 2×2, One Condition Per Panel
+
+Rows are the **embedding modality** (which sets the x-axis), columns the **fMRI modality** predicted. The diagonal is within-modality, the off-diagonal cross-modal:
+
+| x-axis | → image fMRI | → text fMRI |
+| --- | --- | --- |
+| vision, transformer block (27, 0–26) | `image_to_image` | `image_to_text` |
+| text, hidden state (33, 0–32) | `text_to_image` | `text_to_text` |
+
+Each condition reads exactly one encoder, and the two encoders have different depths, so there is no single layer axis. The indices are **not** interchangeable either: a vision index is the output of block *i* (forward hook); a text index is `hidden_states[i]`, so index 0 is the input embedding and index *i* is the output of block *i−1*. Each row's x-axis label says which it is, so the label cannot be collapsed onto the bottom row.
+
+**Every panel scales its own y-axis** (`y_limits: null`). The conditions differ by an order of magnitude — `image_to_text` peaks near 0.010 while `image_to_image` reaches 0.088 — and on a shared axis the weak conditions collapse into flat lines at zero, hiding real layer structure. The cost is that panel heights are not comparable by eye, so every panel keeps its own tick labels and the caption states it. Setting `y_limits` applies one range to all four panels when direct comparison is wanted.
+
+### Encoding
+
+- **Colour = fMRI modality predicted**: image red (`#D96F6F`), text blue (`#6F9FC9`) — the palette convention above, carried by the panel title as well as the curve. Green stays reserved for brain space, which is why the four conditions are not given the four `PALETTE` colours here.
+- **Linestyle = within-modality (solid) vs cross-modal (dashed)**, redundant with the diagonal/off-diagonal position but kept so a panel lifted out of the grid still says which it is.
+- **Shaded band = ±SEM** across subjects (SD with `ddof=1` / √n), matching the bar figures' error definition.
+- **Marker fill = significance**: filled where q < `alpha`, hollow otherwise. Same statistic as the bar charts' stars — `combined_perm_group_pvalue`, the Stelzer-style combination of per-subject permutation nulls, BH-FDR corrected across every layer × condition cell in the figure — just re-encoded, since 60 asterisks along a curve are unreadable.
+- **Dotted vertical rule** at the middle layer used in the main analysis (`main_analysis_layers`, vision 13 / text 16).
+
+### Output
+
+- `reports/figures/layer_sweep/<model>_layer_sweep.png`
+- `reports/figures/layer_sweep/layer_sweep_summary.csv` — per-layer group mean, SEM, `mean_r`, p and q. The peak-layer numbers quoted in the text come from here, not from reading the curve.
+
+---
+
 ## Output Directory Structure
 
 ```text
@@ -155,5 +193,8 @@ reports/
 ├── figures/
 │   ├── noise_ceiling/
 │   │   └── sub-{id}_..._voxelsel_modality-overlay.png  (per subject, MNI or native)
+│   ├── layer_sweep/
+│   │   ├── {model}_layer_sweep.png                     (encoding vs. layer depth)
+│   │   └── layer_sweep_summary.csv                     (per-layer mean, SEM, p, q)
 │   └── encoding_results.png                            (group summary)
 ```

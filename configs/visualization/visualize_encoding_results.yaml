@@ -85,14 +85,26 @@ violin_y_limits: null
 # Supplementary per-subject plot (mean across models)
 plot_subject_mean_across_models: true
 subjects_mean_output_path: null
-subjects_mean_figsize: [10, 3]
+# Taller than the 3.0 it used to be: at that height the two-line y-axis label ran
+# the full height of the axes and its last characters were cut off, and the tick
+# labels were too large for the locator to fit more than two ticks on the axis.
+subjects_mean_figsize: [10, 4.5]
 
 # Share y-limits across all figures for comparability
 share_y_limits: true
 
 # Explicit y-axis limits [min, max] applied to all figures (overrides the
 # auto-computed shared limits when set; use null to auto-scale to the data).
-y_limits: [-0.02, 0.25]
+#
+# 0.20, not the earlier 0.25: that range was set when the Qwen models still
+# carried the stale noise ceiling and reached ~0.16. Corrected, the tallest
+# group bar is 0.105 with SEM, so 0.25 left the plot two-thirds empty.
+# 0.20 is not tighter still because this range is shared by every figure here:
+#   - the grouped bars stack pairwise brackets above the tallest bar, and the
+#     top bracket label lands near 0.155 (0.15 clips it);
+#   - the per-subject panel plots individual subjects, not group means, and
+#     sub-07 image_to_image reaches 0.165.
+y_limits: [-0.02, 0.20]
 
 # ── Include panel with subject-level trajectories ─────────────
 show_subject_panel: true

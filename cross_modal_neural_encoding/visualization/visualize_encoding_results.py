@@ -24,6 +24,7 @@ from loguru import logger
 from matplotlib.axes import Axes
 from matplotlib.lines import Line2D
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 import numpy as np
 from omegaconf import DictConfig
 import pandas as pd
@@ -1707,6 +1708,12 @@ def plot_subject_mean_across_models(
             linscale=1.0,
             base=10,
         )
+    else:
+        # This panel is short and its tick labels are large, so matplotlib's
+        # default locator thins the axis down to two ticks (0.0 and 0.2), which
+        # makes individual subject bars hard to read off. Ask for a denser set of
+        # round-numbered ticks. Skipped under symlog, which needs its own locator.
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=6, steps=[1, 2, 2.5, 5, 10]))
 
     ax.set_ylim(y_min, y_max)
     fig.tight_layout(pad=0.6)

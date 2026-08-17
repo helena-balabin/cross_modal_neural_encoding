@@ -1,0 +1,59 @@
+# ──────────────────────────────────────────────────────────────
+# Configuration for the layer-depth encoding curves
+# See: cross_modal_neural_encoding/visualization/visualize_layer_sweep.py
+# ──────────────────────────────────────────────────────────────
+
+# ── Sweep directory (REQUIRED) ────────────────────────────────
+# Root holding the <modality>_layer_<idx> directories written by
+# scripts/neural_encoding_layer_sweep.sh, e.g.
+#   outputs/neural_encoding_layer_sweep/run_array_123456
+# A parent holding several run_array_* folders also works.
+run_dir: ""
+
+# ── Model ─────────────────────────────────────────────────────
+# Model subfolder inside each layer directory, e.g. "Qwen--Qwen3.5-9B-Base".
+# null = auto-detect, which works whenever the sweep covers a single model.
+model_label: null
+
+# ── Metric to plot ────────────────────────────────────────────
+# Must be a column of summary.csv. Same default as the bar figures so the
+# curves and the published bars are on one scale.
+metric: "mean_normalized_r"
+
+# ── Significance ──────────────────────────────────────────────
+# Group p-values combine the per-subject permutation nulls (null_mean_r.npy,
+# Stelzer et al. 2013) exactly as in visualize_encoding_results.py, falling
+# back to a one-sample sign-flip test when those files are absent. Markers are
+# filled where q < alpha, hollow otherwise.
+alpha: 0.05
+group_sig_permutations: 10000
+group_sig_random_state: 42
+# Correction applied across every layer x condition cell in the figure.
+#   fdr_bh = Benjamini-Hochberg FDR (default);  none = no correction.
+group_sig_correction: fdr_bh
+
+# ── Reference layers ──────────────────────────────────────────
+# The middle layers behind every published result, marked with a dotted rule.
+# floor(n_layers / 2): Qwen3.5-9B-Base has 27 vision blocks and 32 text blocks
+# (33 hidden states, index 0 = input embeddings).
+main_analysis_layers:
+  vision: 13
+  text: 16
+
+# ── Output ────────────────────────────────────────────────────
+# null = reports/figures/layer_sweep/<model>_layer_sweep.png
+output_path: null
+# null = layer_sweep_summary.csv beside the figure. Holds the per-layer group
+# mean, SEM, p and q used for the peak-layer numbers quoted in the text.
+summary_output_path: null
+
+# ── Figure ────────────────────────────────────────────────────
+# 2x2 grid: rows = embedding modality (which sets the x-axis), columns = fMRI
+# modality. Diagonal = within-modality, off-diagonal = cross-modal.
+figsize: [12, 8]
+font_scale: 1.55
+# Explicit y-axis limits [min, max] applied to EVERY panel. null (default) lets
+# each panel scale to its own curve, which is the point of the 2x2 layout: the
+# conditions differ by an order of magnitude, so a shared axis flattens the weak
+# ones. Set [-0.02, 0.25] to match the bar figures and compare panels directly.
+y_limits: null
