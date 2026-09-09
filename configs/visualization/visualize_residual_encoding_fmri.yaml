@@ -21,3 +21,14 @@ metric: "mean_normalized_r"
 
 # Output directory for the two combined figures.
 output_dir: "reports/figures/residual_encoding_fmri"
+
+# ── 2x2 condition matrix (embedding modality x fMRI modality) ─
+# Same layout as the main encoding figure: rows = embedding modality, columns =
+# fMRI modality, with the six pairwise condition comparisons as connectors in
+# the gutters between panels rather than brackets stacked above the bars.
+plot_condition_matrix: true
+condition_matrix_figsize: [15.0, 8.8]
+condition_matrix_font_scale: 1.45
+# null = auto-scale to the data, shared across all four panels. Residualized
+# accuracies go negative, so the range is not anchored at zero.
+condition_matrix_y_limits: null

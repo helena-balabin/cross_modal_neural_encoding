@@ -79,7 +79,7 @@ PANEL_SPECS: tuple[tuple[str, str, str], ...] = (
 )
 
 # ``<embed_modality>_layer_<idx>`` directories written by the sweep script.
-LAYER_DIR_PATTERN = re.compile(r"^(vision|text)_layer_(\d+)$")
+LAYER_DIR_PATTERN = re.compile(r"^(vision|text)_layer_(\d+)$")  # ignore: noqa
 
 
 # ═══════════════════════════════════════════════════════════════════════════

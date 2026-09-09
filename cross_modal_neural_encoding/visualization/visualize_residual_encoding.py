@@ -50,6 +50,7 @@ from cross_modal_neural_encoding.visualization.visualize_encoding_results import
     load_aggregated,
     load_summary,
     pairwise_condition_signrank,
+    plot_condition_matrix,
     plot_grouped_model_means,
 )
 
@@ -71,6 +72,26 @@ RESIDUAL_SIDE_TITLES = {
     "embedding": "Embedding-based residualization",
     "fmri": "fMRI-based residualization",
 }
+
+
+def _residual_matrix_headers(residual_side: str) -> tuple[tuple[str, str], tuple[str, str]]:
+    """Row (embedding) and column (fMRI) headers for the 2x2 condition matrix.
+
+    The same wording as :func:`_residual_condition_labels`, split across the two
+    axes of the matrix: the residualized side keeps the word "Residual". The row
+    labels are kept short because they are rotated (see below).
+    """
+    if residual_side == "fmri":
+        rows = ("Image embeddings", "Text embeddings")
+        cols = ("→ Residual image fMRI", "→ Residual text fMRI")
+    else:  # embedding-based
+        # Not "Residual image embeddings": the row label is rotated, so its
+        # length is bounded by the panel height, and the longer wording had to
+        # be shrunk to ~14 pt to fit. The embedding side is already named by the
+        # figure title, so the short form loses nothing and reads far bigger.
+        rows = ("Residual image", "Residual text")
+        cols = ("→ Image fMRI", "→ Text fMRI")
+    return rows, cols
 
 
 def _residual_condition_labels(residual_side: str) -> dict[str, str]:
@@ -403,6 +424,7 @@ def main(cfg: DictConfig) -> None:
         residual_side = "fmri" if "fmri" in residual_root.name.lower() else "embedding"
     title_prefix = RESIDUAL_SIDE_TITLES[residual_side]
     residual_labels = _residual_condition_labels(residual_side)
+    matrix_rows, matrix_cols = _residual_matrix_headers(residual_side)
     logger.info(f"Residualization side: {residual_side}")
 
     if not residual_root.exists():
@@ -476,6 +498,30 @@ def main(cfg: DictConfig) -> None:
         significance_note=True,
         show_error_bars=True,
     )
+
+    # 1b) The same residualized accuracies as a 2x2 embedding x fMRI matrix, with
+    #     the six pairwise condition comparisons drawn as connectors between the
+    #     panels instead of as brackets stacked above the bars. Same layout as the
+    #     main encoding figure so the two can be read side by side.
+    if bool(cfg.get("plot_condition_matrix", True)):
+        matrix_y_cfg = cfg.get("condition_matrix_y_limits", None)
+        plot_condition_matrix(
+            model_results,
+            metric=metric,
+            alpha=0.05,
+            font_scale=float(cfg.get("condition_matrix_font_scale", 1.45)),
+            output_path=output_dir / "residual_encoding_condition_matrix.png",
+            figsize=tuple(cfg.get("condition_matrix_figsize", [15.0, 8.0])),
+            y_limits=(
+                (float(matrix_y_cfg[0]), float(matrix_y_cfg[1]))
+                if matrix_y_cfg is not None
+                else None
+            ),
+            title=f"{title_prefix}\nResidual encoding accuracy (group means)",
+            show_error_bars=True,
+            row_labels=matrix_rows,
+            col_labels=matrix_cols,
+        )
 
     # 2) Combined delta figure across all models — relative (% of original).
     plot_combined_delta(

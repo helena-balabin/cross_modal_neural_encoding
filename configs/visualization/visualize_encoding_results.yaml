@@ -119,3 +119,18 @@ normalized_axis_linthresh: 0.08
 
 # ── Figure size (width, height in inches) ─────────────────────
 figsize: [10, 3.6]
+
+# ── 2x2 condition matrix (embedding modality x fMRI modality) ─
+# Rows = embedding modality, columns = fMRI modality, so the diagonal is
+# within-modality encoding and the off-diagonal cross-modal. The six pairwise
+# condition comparisons are drawn as connectors in the gutters between panels
+# instead of as brackets stacked above the bars.
+plot_condition_matrix: true
+condition_matrix_output_path: null
+condition_matrix_figsize: [17.0, 9.2]
+condition_matrix_title: "Cross-modal neural encoding"
+# null = auto-scale to the data (shared across all four panels). The global
+# y_limits above are deliberately NOT reused: their 0.20 top only exists to fit
+# the in-axes brackets of the other figures, which this layout does not draw.
+# Set explicitly (e.g. [-0.005, 0.10]) to pin the scale across figure versions.
+condition_matrix_y_limits: null

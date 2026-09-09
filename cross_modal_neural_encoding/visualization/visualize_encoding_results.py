@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections import Counter
 from pathlib import Path
+import re
 from typing import Any, Iterable, cast
 import warnings
 
@@ -24,7 +25,7 @@ from loguru import logger
 from matplotlib.axes import Axes
 from matplotlib.lines import Line2D
 import matplotlib.pyplot as plt
-from matplotlib.ticker import MaxNLocator
+from matplotlib.ticker import FormatStrFormatter, MaxNLocator
 import numpy as np
 from omegaconf import DictConfig
 import pandas as pd
@@ -102,6 +103,79 @@ MODEL_FAMILY_PATTERNS: tuple[tuple[str, str], ...] = (
     ("pythia", "Pythia"),
     ("opt-", "OPT"),
 )
+# ── Condition-matrix palette ────────────────────────────────────────────────
+# Hue encodes model family, lightness encodes model size within that family.
+# Every family gets its own hue, stepped within the modality colours used across
+# the paper: the three vision-language families take three shades of purple
+# (cool → warm: InternVL blue-lavender, Qwen mauve, CLIP rose), the vision-only
+# baselines two warm shades (DINOv2 red, I-JEPA amber) and the text-only
+# baselines two blues (Pythia sky, OPT deeper).
+#
+# Checked with the data-viz palette validator (light surface #fcfcfb). Every
+# ramp passes the ordinal checks — monotone lightness, adjacent ΔL >= 0.06, one
+# hue. Two checks are knowingly not met, both as a direct consequence of the
+# pastel brief:
+#   - light-end contrast is 1.4–1.8:1 rather than >= 2:1, which the 0.5 pt dark
+#     bar outline compensates for;
+#   - the closest family pairs sit below the ΔE 15 normal-vision floor:
+#     InternVL/Qwen at 4.5, DINOv2/I-JEPA at 5.1 and Pythia/OPT at 6.7, so
+#     colour alone cannot separate any of those three pairs.
+# Both are safe here only because colour is *redundant* in this figure: every
+# family block is named directly on the axis and every bar carries its size
+# label, so identity is never colour-alone.
+MATRIX_FAMILY_RAMPS: dict[str, list[str]] = {
+    "InternVL3.5": ["#C7C4EC", "#A8A4DC", "#8A85C7", "#6F6AAE"],  # blue-lavender
+    "Qwen3.5": ["#CFB4D8", "#B896C6", "#A278AF", "#8C5D97"],  # mauve
+    "CLIP": ["#DEB4CA", "#CE9DB6", "#BD86A2", "#A96D8B"],  # rose
+    "DINOv2": ["#F4BCB6", "#E89A93", "#D9776F", "#C4564D"],  # red
+    "I-JEPA": ["#F6C4A6", "#EDA274", "#DC8250", "#C56634"],  # burnt orange
+    "Pythia": ["#C0D8F0", "#9CBCE4", "#789FD2", "#567FBA"],  # sky blue
+    "OPT": ["#B3D2EE", "#7FA8DC", "#5480C4", "#3A5FA0"],  # deeper blue
+}
+# Fallbacks for families without an explicit ramp above, by model category.
+MATRIX_VISION_RAMP = MATRIX_FAMILY_RAMPS["DINOv2"]
+MATRIX_TEXT_RAMP = MATRIX_FAMILY_RAMPS["Pythia"]
+MATRIX_CATEGORY_RAMPS = {
+    0: MATRIX_FAMILY_RAMPS["Qwen3.5"],
+    1: MATRIX_VISION_RAMP,
+    2: MATRIX_TEXT_RAMP,
+}
+# Draw order of the family blocks inside each condition panel.
+MATRIX_FAMILY_ORDER = (
+    "InternVL3.5",
+    "Qwen3.5",
+    "CLIP",
+    "DINOv2",
+    "I-JEPA",
+    "Pythia",
+    "OPT",
+)
+# Axis labels for the family blocks, spelled as the paper's model section does.
+# The dict keys are the internal family names from MODEL_FAMILY_PATTERNS.
+MATRIX_FAMILY_DISPLAY = {"Qwen3.5": "Qwen3.5-VL", "CLIP": "OpenCLIP"}
+# Blank x-units left between family blocks inside a condition panel.
+BLOCK_GAP = 1.2
+# Gutters between the 2x2 panels, as fractions of panel size. Kept tight: they
+# only have to hold the pairwise connectors, and every point saved goes to the
+# panels, where the model labels have to stay legible in print.
+MATRIX_WSPACE = 0.21
+MATRIX_HSPACE = 0.30
+
+# Named size tokens for checkpoints that do not spell out a parameter count.
+# Checked before the "<n>B" regex because CLIP labels carry a training-set size
+# ("laion2B") that the regex would otherwise read as the model size.
+MATRIX_SIZE_TOKENS: tuple[tuple[str, float, str], ...] = (
+    ("vit-g", 3.0, "G"),
+    ("vitg", 3.0, "G"),
+    ("giant", 3.0, "G"),
+    ("vit-h", 2.0, "H"),
+    ("vith", 2.0, "H"),
+    ("huge", 2.0, "H"),
+    ("vit-l", 1.0, "L"),
+    ("vitl", 1.0, "L"),
+    ("large", 1.0, "L"),
+)
+
 COLD_SUBJECT_PALETTE = [
     "#A8C8E8",  # cold pastel blue
     "#93C8C8",  # cold pastel teal
@@ -161,6 +235,55 @@ def model_family(model_label: str) -> str:
         if pattern in lowered:
             return family
     return short
+
+
+def model_size(model_label: str) -> tuple[float, str]:
+    """Model size as ``(sort_rank, short display label)``.
+
+    The rank orders checkpoints within a family so the colour ramp runs
+    small→large; the display label is what goes under the bar (``"2B"``,
+    ``"L"``, …). Unrecognised checkpoints rank first with an empty label rather
+    than raising — an unlabelled bar is recoverable, a crash is not.
+    """
+    short = short_model_label(model_label).lower()
+    for token, rank, display in MATRIX_SIZE_TOKENS:
+        if token in short:
+            return rank, display
+    match = re.search(r"(\d+(?:\.\d+)?)\s*b\b", short)
+    if match:
+        return float(match.group(1)), f"{match.group(1)}B"
+    return 0.0, ""
+
+
+def _matrix_model_order(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sort panel members into family blocks, small→large inside each block."""
+
+    def key(item: dict[str, Any]) -> tuple[int, float, str]:
+        label = item["model_label"]
+        family = model_family(label)
+        try:
+            family_rank = MATRIX_FAMILY_ORDER.index(family)
+        except ValueError:
+            family_rank = len(MATRIX_FAMILY_ORDER)
+        return (family_rank, model_size(label)[0], label)
+
+    return sorted(items, key=key)
+
+
+def _matrix_color(family: str, category: int, position: int, family_size: int) -> str:
+    """Ramp step for the *position*-th (small→large) member of a family.
+
+    Families with fewer members than the ramp has steps spread across the whole
+    ramp, so a two-model family still gets maximum lightness contrast rather than
+    two neighbouring steps.
+    """
+    ramp = MATRIX_FAMILY_RAMPS.get(family) or MATRIX_CATEGORY_RAMPS.get(
+        category, MATRIX_VISION_RAMP
+    )
+    if family_size <= 1:
+        return ramp[len(ramp) // 2]
+    step = round(position * (len(ramp) - 1) / (family_size - 1))
+    return ramp[int(min(step, len(ramp) - 1))]
 
 
 def select_best_per_family(
@@ -502,6 +625,77 @@ def _group_level_pvalues(
             )
         pvals.append(p)
     return np.asarray(pvals, dtype=float)
+
+
+def _group_stats_matrices(
+    model_results: list[dict[str, Any]],
+    conditions: list[str],
+    *,
+    metric: str,
+    group_sig_permutations: int,
+    group_sig_random_state: int,
+    group_sig_correction: str,
+    show_error_bars: bool,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(values, qvalues, sems)`` matrices of shape ``(n_models, n_conditions)``.
+
+    Shared by every figure that draws one bar per model and condition, so they
+    all correct over the same family of tests and cannot drift into showing
+    different stars for the same numbers. Conditions a model was not run on stay
+    ``NaN`` throughout. ``sems`` is all-``NaN`` unless *show_error_bars*.
+    """
+    n_models, n_conditions = len(model_results), len(conditions)
+    values = _model_condition_matrix(model_results, conditions, metric)
+
+    pvals = np.full((n_models, n_conditions), np.nan, dtype=float)
+    for i, item in enumerate(model_results):
+        summary_df = item.get("summary_df")
+        if summary_df is None or "condition" not in summary_df.columns:
+            continue
+        present = set(summary_df["condition"].unique())
+        model_conditions = [c for c in conditions if c in present]
+        cond_pvals = _group_level_pvalues(
+            summary_df,
+            conditions=model_conditions,
+            metric=metric,
+            model_dir=item.get("model_dir"),
+            n_permutations=group_sig_permutations,
+            random_state=group_sig_random_state,
+        )
+        for cond, p in zip(model_conditions, cond_pvals):
+            pvals[i, conditions.index(cond)] = p
+
+    # Correct for multiple comparisons across all model x condition tests
+    # shown in this figure (NaN/"na" cells are excluded from the family).
+    if group_sig_correction == "fdr_bh":
+        pvals = benjamini_hochberg(pvals)
+
+    # Per-bar error bars: SEM across subjects of each model's condition mean,
+    # from the aggregated across-subject SD and the per-subject subject count
+    # (SEM = SD / sqrt(n)).
+    sems = np.full((n_models, n_conditions), np.nan, dtype=float)
+    if show_error_bars:
+        for i, item in enumerate(model_results):
+            df = item["aggregated_df"]
+            sdf = item.get("summary_df")
+            has_summary = (
+                sdf is not None and "condition" in sdf.columns and metric in sdf.columns
+            )
+            for j, cond in enumerate(conditions):
+                if cond not in df.index:
+                    continue
+                try:
+                    sd = float(df.loc[cond, (metric, "std")])
+                except (KeyError, ValueError):
+                    continue
+                n = 0
+                if has_summary:
+                    col = sdf.loc[sdf["condition"] == cond, metric].to_numpy(dtype=float)  # type: ignore
+                    n = int(np.isfinite(col).sum())
+                if n >= 2 and np.isfinite(sd):
+                    sems[i, j] = sd / np.sqrt(n)
+
+    return values, pvals, sems
 
 
 def pairwise_condition_signrank(
@@ -1005,55 +1199,15 @@ def plot_grouped_model_means(
     n_models = len(model_labels)
     n_conditions = len(conditions)
 
-    values = _model_condition_matrix(model_results, conditions, metric)
-
-    pvals = np.full((n_models, n_conditions), np.nan, dtype=float)
-    for i, item in enumerate(model_results):
-        summary_df = item.get("summary_df")
-        if summary_df is None or "condition" not in summary_df.columns:
-            continue
-        present = set(summary_df["condition"].unique())
-        model_conditions = [c for c in conditions if c in present]
-        cond_pvals = _group_level_pvalues(
-            summary_df,
-            conditions=model_conditions,
-            metric=metric,
-            model_dir=item.get("model_dir"),
-            n_permutations=group_sig_permutations,
-            random_state=group_sig_random_state,
-        )
-        for cond, p in zip(model_conditions, cond_pvals):
-            pvals[i, conditions.index(cond)] = p
-
-    # Correct for multiple comparisons across all model x condition tests
-    # shown in this figure (NaN/"na" cells are excluded from the family).
-    if group_sig_correction == "fdr_bh":
-        pvals = benjamini_hochberg(pvals)
-
-    # Optional per-bar error bars: SEM across subjects of each model's condition
-    # mean, matching plot_combined_delta. Uses the aggregated across-subject SD
-    # and the subject count from the per-subject summary (SEM = SD / sqrt(n)).
-    sems = np.full((n_models, n_conditions), np.nan, dtype=float)
-    if show_error_bars:
-        for i, item in enumerate(model_results):
-            df = item["aggregated_df"]
-            sdf = item.get("summary_df")
-            has_summary = (
-                sdf is not None and "condition" in sdf.columns and metric in sdf.columns
-            )
-            for j, cond in enumerate(conditions):
-                if cond not in df.index:
-                    continue
-                try:
-                    sd = float(df.loc[cond, (metric, "std")])
-                except (KeyError, ValueError):
-                    continue
-                n = 0
-                if has_summary:
-                    col = sdf.loc[sdf["condition"] == cond, metric].to_numpy(dtype=float)  # type: ignore
-                    n = int(np.isfinite(col).sum())
-                if n >= 2 and np.isfinite(sd):
-                    sems[i, j] = sd / np.sqrt(n)
+    values, pvals, sems = _group_stats_matrices(
+        model_results,
+        conditions,
+        metric=metric,
+        group_sig_permutations=group_sig_permutations,
+        group_sig_random_state=group_sig_random_state,
+        group_sig_correction=group_sig_correction,
+        show_error_bars=show_error_bars,
+    )
 
     is_normalized_metric = "normalized" in metric.lower()
 
@@ -1351,6 +1505,615 @@ def plot_grouped_model_means(
     )
     logger.success(f"Grouped-model figure saved to {output_path}")
     plt.close(fig)
+
+
+def _matrix_panel_members(
+    model_results: list[dict[str, Any]],
+    values: np.ndarray,
+    condition_index: int,
+) -> list[dict[str, Any]]:
+    """Models with a finite value in one condition, in family/size draw order.
+
+    Each entry keeps ``row`` — the model's index into the figure-wide statistics
+    matrices — so a panel never has to re-derive its own statistics.
+    """
+    members = [
+        {"row": i, "model_label": item["model_label"]}
+        for i, item in enumerate(model_results)
+        if np.isfinite(values[i, condition_index])
+    ]
+    return _matrix_model_order(members)
+
+
+def _fit_fontsize(requested_pt: float, available_pt: float, n_chars: int) -> float:
+    """Largest of *requested_pt* and a size whose *n_chars* fit *available_pt*.
+
+    The per-bar and per-block labels sit in slots whose width is fixed by the
+    model count, so a font size chosen as a constant either collides in the
+    dense panels or is needlessly small in the sparse ones. ``0.62`` em per
+    character is a conservative average for the sans-serif face used here.
+    """
+    if n_chars <= 0:
+        return requested_pt
+    return max(1.0, min(requested_pt, available_pt / (0.62 * n_chars)))
+
+
+def _draw_matrix_panel(
+    ax: Axes,
+    members: list[dict[str, Any]],
+    *,
+    values: np.ndarray,
+    qvalues: np.ndarray,
+    sems: np.ndarray,
+    condition_index: int,
+    alpha: float,
+    font_scale: float,
+    show_error_bars: bool,
+    labels_on_top: bool,
+    fig_size_in: tuple[float, float],
+    block_gap: float = BLOCK_GAP,
+) -> float:
+    """Draw one condition panel: family blocks of bars with direct size labels.
+
+    Bars are grouped into family blocks separated by *block_gap*, coloured by
+    category hue and size lightness, and labelled directly on the axis (size
+    under each bar, family under each block) so the figure needs no legend.
+
+    Returns the height in points that the label tiers take up above the axes
+    (zero when they are drawn below), so the caller can clear them.
+    """
+    families = [model_family(m["model_label"]) for m in members]
+
+    # Lay the bars out in family blocks, leaving a gap between blocks so family
+    # membership is pre-attentive rather than something to look up.
+    positions: list[float] = []
+    cursor = 0.0
+    for idx, family in enumerate(families):
+        if idx > 0 and family != families[idx - 1]:
+            cursor += block_gap
+        positions.append(cursor)
+        cursor += 1.0
+
+    family_counts = Counter(families)
+    seen: Counter[str] = Counter()
+    colors: list[str] = []
+    for member, family in zip(members, families):
+        category = _model_category_rank(member["model_label"])[0]
+        colors.append(
+            _matrix_color(family, category, seen[family], family_counts[family])
+        )
+        seen[family] += 1
+
+    # Width of one bar slot in points, so the label sizes below can be fitted to
+    # the space that actually exists rather than assumed.
+    x_span = (positions[-1] + 0.9) - (positions[0] - 0.9)
+    axes_pt = ax.get_position().width * fig_size_in[0] * 72.0
+    unit_pt = axes_pt / x_span
+
+    heights = np.array([values[m["row"], condition_index] for m in members], dtype=float)
+    errors = (
+        np.array([sems[m["row"], condition_index] for m in members], dtype=float)
+        if show_error_bars
+        else np.full(len(members), np.nan)
+    )
+    errors = np.where(np.isfinite(errors), errors, 0.0)
+
+    ax.bar(
+        positions,
+        heights,
+        width=0.82,
+        yerr=errors if show_error_bars else None,
+        color=colors,
+        edgecolor="#4A4A4A",
+        linewidth=0.5,
+        error_kw={"linewidth": 0.8, "ecolor": "#333333"},
+        capsize=2,
+        zorder=3,
+    )
+
+    # Per-bar significance vs. chance. Drawn horizontally where a bar is wide
+    # enough for "***" at full size, and stacked vertically where it is not —
+    # a horizontal string that overflows its bar collides with its neighbours.
+    star_pt = 12.0 * font_scale
+    y_min, y_max = ax.get_ylim()
+    pad = 0.018 * (y_max - y_min)
+    for pos, height, err, member in zip(positions, heights, errors, members):
+        q = qvalues[member["row"], condition_index]
+        if not np.isfinite(q):
+            continue
+        sig = significance_label(float(q), alpha)
+        if not sig:
+            continue
+        top = height + err if height >= 0 else height - err
+        ax.text(
+            pos,
+            top + (pad if height >= 0 else -pad),
+            "\n".join(sig) if 0.62 * star_pt * len(sig) > unit_pt else sig,
+            ha="center",
+            va="bottom" if height >= 0 else "top",
+            linespacing=0.62,
+            fontsize=star_pt,
+            color="black" if sig == "ns" else "darkred",
+            zorder=5,
+        )
+
+    ax.set_xlim(positions[0] - 0.9, positions[-1] + 0.9)
+    ax.set_xticks(positions)
+    size_labels = [model_size(m["model_label"])[1] for m in members]
+    size_chars = max(len(t) for t in size_labels)
+    size_pt = 12.0 * font_scale
+    rotate_sizes = 0.62 * size_pt * size_chars > unit_pt
+    ax.set_xticklabels(size_labels, fontsize=size_pt, rotation=90 if rotate_sizes else 0)
+    ax.tick_params(axis="x", length=0, pad=3)
+    if labels_on_top:
+        ax.xaxis.set_ticks_position("top")
+        ax.tick_params(axis="x", top=False, labeltop=True, bottom=False, labelbottom=False)
+
+    # Family names as a second axis tier, outside the panel on the same side as
+    # the size labels (above for the top row, below for the bottom row) so the
+    # gutter between the panels stays free for the pairwise connectors.
+    panel_pt = ax.get_position().height * fig_size_in[1] * 72.0
+    size_tier_pt = 0.62 * size_pt * size_chars if rotate_sizes else size_pt
+    gap_frac = (size_tier_pt * 1.15 + 8.0) / panel_pt
+    family_y = 1.0 + gap_frac if labels_on_top else -gap_frac
+    names, counts = _run_lengths(families)
+    # One size for every block in the panel, set by the tightest block, so the
+    # family tier does not look ragged.
+    family_pt = min(
+        _fit_fontsize(
+            12.5 * font_scale,
+            count * unit_pt + block_gap * unit_pt,
+            len(MATRIX_FAMILY_DISPLAY.get(name, name)),
+        )
+        for name, count in zip(names, counts)
+    )
+    start = 0
+    for family, count in zip(names, counts):
+        display = MATRIX_FAMILY_DISPLAY.get(family, family)
+        center = float(np.mean(positions[start : start + count]))
+        ax.text(
+            center,
+            family_y,
+            display,
+            transform=ax.get_xaxis_transform(),
+            ha="center",
+            va="bottom" if labels_on_top else "top",
+            fontsize=family_pt,
+            color="#333333",
+        )
+        start += count
+
+    ax.axhline(y=0, color="black", linewidth=0.5, zorder=1)
+    ax.grid(axis="y", alpha=0.25, zorder=0)
+    ax.set_axisbelow(True)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+
+    # Points of vertical space the size + family tiers occupy above the axes,
+    # for the caller to pad the column header past.
+    return gap_frac * panel_pt + family_pt + 6.0 if labels_on_top else 0.0
+
+
+def _run_lengths(items: list[str]) -> tuple[list[str], list[int]]:
+    """Consecutive runs in *items* as ``(values, lengths)``."""
+    names: list[str] = []
+    counts: list[int] = []
+    for item in items:
+        if names and names[-1] == item:
+            counts[-1] += 1
+        else:
+            names.append(item)
+            counts.append(1)
+    return names, counts
+
+
+def _connector_label(q: float, alpha: float) -> tuple[str, str]:
+    """``(text, colour)`` for a pairwise-comparison connector."""
+    sig = significance_label(float(q), alpha) if np.isfinite(q) else ""
+    return sig, "#333333" if sig in ("", "ns") else "darkred"
+
+
+def _draw_matrix_connectors(
+    fig,
+    axes: np.ndarray,
+    *,
+    pair_qvalues: dict[tuple[int, int], float],
+    panel_of_condition: dict[int, tuple[int, int]],
+    alpha: float,
+    font_scale: float,
+) -> None:
+    """Draw the six pairwise-condition comparisons in the gutters between panels.
+
+    The 2x2 layout turns the six comparisons into geometry: the two *row*
+    comparisons run horizontally between the panels of a row, the two *column*
+    comparisons run vertically between the rows, and the two *diagonal*
+    comparisons cross in the central box. The cross-modal asymmetry the results
+    section is about is one of the diagonals, so it reads as a single line rather
+    than as one bracket among six stacked above the bars.
+    """
+    condition_of_panel = {panel: cond for cond, panel in panel_of_condition.items()}
+    boxes = {
+        (r, c): axes[r][c].get_position() for r in range(2) for c in range(2)
+    }
+    # The gutter between the four panels, in figure coordinates.
+    gx0, gx1 = boxes[(0, 0)].x1, boxes[(0, 1)].x0
+    gy0, gy1 = boxes[(1, 0)].y1, boxes[(0, 0)].y0
+    fs = 14.0 * font_scale
+
+    def pair_q(panel_a: tuple[int, int], panel_b: tuple[int, int]) -> float:
+        j, k = sorted((condition_of_panel[panel_a], condition_of_panel[panel_b]))
+        return pair_qvalues.get((j, k), np.nan)
+
+    def line(xs, ys, **kwargs) -> None:
+        fig.add_artist(
+            Line2D(xs, ys, transform=fig.transFigure, color="#666666", linewidth=0.9, **kwargs)
+        )
+
+    # Pull the connector ends back from the panels so both end ticks sit in clear
+    # space; drawn flush against a spine they read as a plain line with no ends.
+    inset_x = 0.16 * (gx1 - gx0)
+    inset_y = 0.16 * (gy1 - gy0)
+    tick_x = 0.009  # half-length of the end ticks, figure fraction
+    tick_y = 0.016
+
+    # Row comparisons: horizontal, at the vertical midpoint of each row.
+    for r in range(2):
+        q = pair_q((r, 0), (r, 1))
+        text, color = _connector_label(q, alpha)
+        if not text:
+            continue
+        y = (boxes[(r, 0)].y0 + boxes[(r, 0)].y1) / 2.0
+        x_left, x_right = gx0 + inset_x, gx1 - inset_x
+        line([x_left, x_right], [y, y])
+        line([x_left, x_left], [y - tick_y, y + tick_y])
+        line([x_right, x_right], [y - tick_y, y + tick_y])
+        fig.text(
+            (gx0 + gx1) / 2.0, y + tick_y + 0.006, text,
+            ha="center", va="bottom", fontsize=fs, color=color,
+        )
+
+    # Column comparisons: vertical, at the horizontal midpoint of each column.
+    for c in range(2):
+        q = pair_q((0, c), (1, c))
+        text, color = _connector_label(q, alpha)
+        if not text:
+            continue
+        x = (boxes[(0, c)].x0 + boxes[(0, c)].x1) / 2.0
+        y_bottom, y_top = gy0 + inset_y, gy1 - inset_y
+        line([x, x], [y_bottom, y_top])
+        line([x - tick_x, x + tick_x], [y_bottom, y_bottom])
+        line([x - tick_x, x + tick_x], [y_top, y_top])
+        fig.text(
+            x + tick_x + 0.005, (gy0 + gy1) / 2.0, text,
+            ha="left", va="center", fontsize=fs, color=color,
+        )
+
+    # Diagonal comparisons: corner to corner of the central box. Each label sits
+    # a quarter of the way along its own line, where only that line passes, so
+    # the two diagonals stay individually readable where they cross.
+    diagonals = (
+        (((0, 0), (1, 1)), (gx0, gy1), (gx1, gy0), "right"),
+        (((0, 1), (1, 0)), (gx1, gy1), (gx0, gy0), "left"),
+    )
+    for panels, (x_start, y_start), (x_end, y_end), ha in diagonals:
+        q = pair_q(*panels)
+        text, color = _connector_label(q, alpha)
+        if not text:
+            continue
+        dx, dy = x_end - x_start, y_end - y_start
+        x_start, y_start = x_start + 0.14 * dx, y_start + 0.14 * dy
+        x_end, y_end = x_end - 0.14 * dx, y_end - 0.14 * dy
+        line([x_start, x_end], [y_start, y_end], linestyle=(0, (4, 3)))
+        for x_cap, y_cap in ((x_start, y_start), (x_end, y_end)):
+            line([x_cap - tick_x, x_cap + tick_x], [y_cap, y_cap])
+        t = 0.16
+        fig.text(
+            x_start + t * (x_end - x_start) + (-0.005 if ha == "right" else 0.005),
+            y_start + t * (y_end - y_start) + 0.006,
+            text,
+            ha=ha, va="bottom", fontsize=fs, color=color,
+        )
+
+
+def _wrap_row_label(text: str, max_chars: int = 12) -> str:
+    """Break a row label onto two balanced lines when it is long.
+
+    The row label is rotated, so its length is bounded by the *panel height*.
+    "Residual image embeddings" set on one line is taller than the panel it
+    labels; split near the middle it fits at full size.
+    """
+    if len(text) <= max_chars or " " not in text:
+        return text
+    words = text.split()
+    split = min(
+        range(1, len(words)),
+        key=lambda i: abs(len(" ".join(words[:i])) - len(" ".join(words[i:]))),
+    )
+    return " ".join(words[:split]) + "\n" + " ".join(words[split:])
+
+
+def _matrix_colour_note(categories: set[int]) -> str:
+    """Caption clause naming the colour families, for the categories drawn."""
+    words = [
+        word
+        for rank, word in (
+            (0, "purples: vision–language"),
+            (1, "reds: vision-only"),
+            (2, "blues: text-only"),
+        )
+        if rank in categories
+    ]
+    return f" ({'; '.join(words)})" if words else ""
+
+
+def _matrix_scale_note(families: set[str]) -> str:
+    """Caption clause defining the ViT-scale letters, for the families drawn.
+
+    Only the parameter-count families are named by size in the paper, so the
+    letters need spelling out — but only for the families this figure contains.
+    """
+    parts: list[str] = ["parameter count in billions (B)"]
+    if families & {"CLIP", "DINOv2"}:
+        parts.append("L = ViT-L/14")  # noqa: E501
+    if families & {"CLIP", "I-JEPA"}:
+        parts.append("H = ViT-H/14")
+    if {"DINOv2", "I-JEPA"} <= families:
+        parts.append("G = ViT-g/14 for DINOv2 and ViT-g/16 for I-JEPA")
+    elif "DINOv2" in families:
+        parts.append("G = ViT-g/14")
+    elif "I-JEPA" in families:
+        parts.append("G = ViT-g/16")
+    return "Bar labels give model scale: " + ", ".join(parts) + "."
+
+
+def plot_condition_matrix(
+    model_results: list[dict[str, Any]],
+    *,
+    metric: str,
+    alpha: float,
+    font_scale: float,
+    output_path: Path | None,
+    figsize: tuple[float, float],
+    y_limits: tuple[float, float] | None,
+    group_sig_permutations: int = 10000,
+    group_sig_random_state: int = 42,
+    group_sig_correction: str = "fdr_bh",
+    title: str = "Cross-modal neural encoding",
+    show_error_bars: bool = True,
+    row_labels: tuple[str, str] = ("Image embeddings", "Text embeddings"),
+    col_labels: tuple[str, str] = ("→ Image fMRI", "→ Text fMRI"),
+) -> None:
+    """Plot the four encoding conditions as a 2x2 embedding x fMRI matrix.
+
+    Rows are the embedding modality, columns the fMRI modality, so the diagonal
+    is within-modality encoding and the off-diagonal is cross-modal. All four
+    panels share one y-axis, which is what makes the panels comparable by eye.
+
+    Two structural facts do the decluttering relative to the single-axis grouped
+    figure. First, the vision-only baselines have no text embeddings and the
+    text-only baselines no image embeddings, so each row simply shows the models
+    that apply and the "na" placeholders disappear. Second, the six pairwise
+    condition comparisons become the connectors between panels instead of six
+    brackets stacked above the bars, which frees the vertical range those
+    brackets used to reserve.
+    """
+    conditions = _condition_order_from_index(
+        {c for item in model_results for c in item["aggregated_df"].index}
+    )
+    row_modalities = ("image", "text")  # embedding modality
+    col_modalities = ("image", "text")  # fMRI modality
+    panel_of_condition: dict[int, tuple[int, int]] = {}
+    for r, row_mod in enumerate(row_modalities):
+        for c, col_mod in enumerate(col_modalities):
+            key = f"{row_mod}_to_{col_mod}"
+            if key not in conditions:
+                logger.warning(f"Condition matrix needs '{key}'; skipping figure.")
+                return
+            panel_of_condition[conditions.index(key)] = (r, c)
+
+    values, qvalues, sems = _group_stats_matrices(
+        model_results,
+        conditions,
+        metric=metric,
+        group_sig_permutations=group_sig_permutations,
+        group_sig_random_state=group_sig_random_state,
+        group_sig_correction=group_sig_correction,
+        show_error_bars=show_error_bars,
+    )
+    pair_qvalues = pairwise_condition_signrank(values, correction=group_sig_correction)
+
+    if y_limits is None:
+        finite = np.isfinite(values)
+        if not np.any(finite):
+            logger.warning("No finite values available for the condition matrix.")
+            return
+        spread = np.where(np.isfinite(sems), sems, 0.0)[finite]
+        y_limits = _compute_plot_ylims(
+            values[finite],
+            spread,
+            is_normalized_metric="normalized" in metric.lower(),
+            compress_normalized_axis=False,
+            normalized_axis_linthresh=0.08,
+        )
+
+    families_drawn = {model_family(item["model_label"]) for item in model_results}
+    scale_note = _matrix_scale_note(families_drawn)
+    colour_note = _matrix_colour_note(
+        {_model_category_rank(item["model_label"])[0] for item in model_results}
+    )
+    missing_note = (
+        ""
+        if np.all(np.isfinite(values))
+        else "  Each row shows only the models that have embeddings of that modality."
+    )
+    footnote = (
+        "Bars: per-model group mean ± SEM across subjects.  Colour = model family"
+        + colour_note
+        + ", lightness = model size within family.\n"
+        + scale_note
+        + "\nStars on bars: encoding vs. chance.  Connectors between panels: pairwise "
+        "condition comparisons (Wilcoxon signed-rank across models).\n"
+        "All q-values BH-FDR corrected — *** q<0.001, ** q<0.01, * q<0.05, "
+        "ns not significant." + missing_note
+    )
+    footnote_pt = 8.5 * font_scale
+
+    row_labels = (_wrap_row_label(row_labels[0]), _wrap_row_label(row_labels[1]))
+    longest_row_line = max(len(line) for label in row_labels for line in label.split("\n"))
+    row_lines = max(label.count("\n") + 1 for label in row_labels)
+    fig, axes = plt.subplots(2, 2, figsize=figsize, sharey=True)
+    # The title block and the row labels both eat into the panel area, and both
+    # grow with the text they are given, so size their margins from that text.
+    # Above the top row sit, in order: the size labels, the family names, the
+    # column header and the suptitle. Reserve the worst case for all four —
+    # _fit_fontsize only ever shrinks the label tiers from these ceilings, so an
+    # upper bound here can waste a little space but can never collide.
+    size_chars = max(
+        len(model_size(item["model_label"])[1]) for item in model_results
+    )
+    top_stack_pt = (
+        1.15 * 0.62 * (12.0 * font_scale) * size_chars + 8.0  # size-label tier
+        + 12.5 * font_scale + 6.0  # family tier
+        + 16.5 * font_scale + 8.0  # column header
+        + 18.5 * font_scale * 1.25 * (title.count("\n") + 1)  # suptitle
+        + 16.0
+    )
+    top_margin = 1.0 - top_stack_pt / (figsize[1] * 72.0)
+    bottom_stack_pt = (
+        1.15 * 0.62 * (12.0 * font_scale) * size_chars + 8.0  # size-label tier
+        + 12.5 * font_scale + 6.0  # family tier
+        + footnote_pt * 1.5 * (footnote.count("\n") + 1)  # footnote block
+        + 16.0
+    )
+    bottom_margin = bottom_stack_pt / (figsize[1] * 72.0)
+
+    # Left of the panels sit the shared metric label, the (rotated) row label
+    # and the y tick labels. The row label's size depends on the panel height,
+    # which is fixed by the margins above, so it can be resolved here and reused
+    # when the label is actually set.
+    panel_pt_est = (
+        (top_margin - bottom_margin) / (2.0 + MATRIX_HSPACE) * figsize[1] * 72.0
+    )
+    row_label_pt = _fit_fontsize(17.0 * font_scale, panel_pt_est, longest_row_line)
+    tick_pt = 13.5 * font_scale
+    left_margin = (
+        tick_pt * 1.5  # shared metric label, rotated
+        + row_label_pt * 1.25 * row_lines  # row label, rotated
+        + 0.62 * tick_pt * 5  # widest y tick label ("-0.05")
+        + 34.0
+    ) / (figsize[0] * 72.0)
+    fig.subplots_adjust(
+        left=left_margin, right=0.985, top=top_margin, bottom=bottom_margin,
+        wspace=MATRIX_WSPACE, hspace=MATRIX_HSPACE,
+    )
+    panel_members = {
+        condition_index: _matrix_panel_members(model_results, values, condition_index)
+        for condition_index in panel_of_condition
+    }
+
+    # Where a bar is too narrow for a horizontal "***" the stars stack, and the
+    # stack needs clear space above the tallest bar or it runs into the family
+    # labels. Convert that requirement from points into data units: to leave a
+    # fraction f of the panel height clear, the span has to grow by f*span/(1-f).
+    panel_box = axes[0][0].get_position()
+    panel_pt = panel_box.height * figsize[1] * 72.0
+    panel_w_pt = panel_box.width * figsize[0] * 72.0
+
+    def _unit_pt(members: list[dict[str, Any]]) -> float:
+        """Width of one bar slot in a panel holding *members*, in points."""
+        n_blocks = len({model_family(m["model_label"]) for m in members})
+        return panel_w_pt / (len(members) + BLOCK_GAP * (n_blocks - 1) + 1.8)
+
+    unit_pt = min(_unit_pt(members) for members in panel_members.values())
+    star_pt = 12.0 * font_scale
+    stacked = 0.62 * star_pt * 3 > unit_pt
+    star_pt_h = (3 * star_pt * 0.62 if stacked else star_pt) + 8.0
+    headroom = star_pt_h / panel_pt
+    if 0.0 < headroom < 0.5:
+        span = y_limits[1] - y_limits[0]
+        grow = headroom * span / (1.0 - headroom)
+        # Bars below zero carry their stars underneath, so they need the same
+        # clearance at the bottom of the panel as the upward bars do at the top.
+        low = y_limits[0] - (grow if np.nanmin(values) < 0 else 0.0)
+        y_limits = (low, y_limits[1] + grow)
+
+    for ax in axes.flat:
+        ax.set_ylim(*y_limits)
+
+    header_pad = 0.0
+    for condition_index, (r, c) in panel_of_condition.items():
+        clearance = _draw_matrix_panel(
+            axes[r][c],
+            panel_members[condition_index],
+            values=values,
+            qvalues=qvalues,
+            sems=sems,
+            condition_index=condition_index,
+            alpha=alpha,
+            font_scale=font_scale,
+            show_error_bars=show_error_bars,
+            labels_on_top=(r == 0),
+            fig_size_in=figsize,
+        )
+        header_pad = max(header_pad, clearance)
+
+    # Column headers name the fMRI modality, row labels the embedding modality,
+    # so each panel is read as the intersection of the two.
+    for c in range(len(col_modalities)):
+        axes[0][c].set_title(
+            col_labels[c],
+            fontsize=16.5 * font_scale,
+            fontweight="bold",
+            pad=header_pad + 8.0,
+        )
+    for r in range(len(row_modalities)):
+        axes[r][0].set_ylabel(
+            row_labels[r],
+            fontsize=row_label_pt,
+            fontweight="bold",
+            labelpad=16,
+        )
+        axes[r][0].tick_params(axis="y", labelsize=13.5 * font_scale)
+        axes[r][0].yaxis.set_major_locator(MaxNLocator(nbins=4, steps=[1, 2, 5]))
+        axes[r][0].yaxis.set_major_formatter(FormatStrFormatter("%.2f"))
+
+    metric_label = (
+        "Normalized performance (r / noise ceiling)"
+        if "normalized" in metric.lower()
+        else "Pearson correlation"
+    )
+    fig.supylabel(metric_label, fontsize=13.5 * font_scale, x=0.007)
+    fig.suptitle(title, fontsize=18.5 * font_scale, fontweight="bold", y=0.985)
+
+    # Positions are only final once the layout is fixed, and the connectors are
+    # placed in figure coordinates from the panel boxes.
+    fig.canvas.draw()
+    _draw_matrix_connectors(
+        fig,
+        axes,
+        pair_qvalues=pair_qvalues,
+        panel_of_condition=panel_of_condition,
+        alpha=alpha,
+        font_scale=font_scale,
+    )
+
+    fig.text(
+        0.5,
+        0.012,
+        footnote,
+        ha="center",
+        va="bottom",
+        fontsize=footnote_pt,
+        linespacing=1.5,
+        color="#4A4A4A",
+    )
+
+    if output_path is None:
+        output_path = FIGURES_DIR / "encoding_results_condition_matrix.png"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)
+    logger.success(f"Saved condition-matrix figure to {output_path}")
 
 
 def plot_condition_violins(
@@ -1906,6 +2669,35 @@ def main(cfg: DictConfig) -> None:
             group_sig_correction=group_sig_correction,
             show_error_bars=bool(cfg.get("show_error_bars", True)),
             title="Best Model per Family Based on Group Means",
+        )
+
+    if bool(cfg.get("plot_condition_matrix", True)):
+        matrix_y_cfg = cfg.get("condition_matrix_y_limits", None)
+        plot_condition_matrix(
+            model_results,
+            metric=cfg.metric,
+            alpha=cfg.alpha,
+            font_scale=font_scale,
+            output_path=(
+                Path(cfg.condition_matrix_output_path)
+                if cfg.get("condition_matrix_output_path", None)
+                else None
+            ),
+            figsize=tuple(cfg.get("condition_matrix_figsize", [17.0, 9.2])),
+            # Independent of the shared y_limits: those reserve headroom for the
+            # pairwise brackets the other figures stack above their bars, which
+            # this layout moves out of the axes entirely. All four panels still
+            # share one scale, which is what makes them comparable.
+            y_limits=(
+                (float(matrix_y_cfg[0]), float(matrix_y_cfg[1]))
+                if matrix_y_cfg is not None
+                else None
+            ),
+            group_sig_permutations=int(cfg.get("group_sig_permutations", 10000)),
+            group_sig_random_state=int(cfg.get("group_sig_random_state", 42)),
+            group_sig_correction=group_sig_correction,
+            show_error_bars=bool(cfg.get("show_error_bars", True)),
+            title=str(cfg.get("condition_matrix_title", "Cross-modal neural encoding")),
         )
 
     if bool(cfg.get("plot_condition_violins", True)):
