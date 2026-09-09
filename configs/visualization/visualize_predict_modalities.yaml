@@ -55,11 +55,15 @@ annotate: false
 # Larger fonts on a slightly smaller heatmap so the text reads clearly in the
 # paper. Kept wide enough that the 14 rotated tick labels do not overlap.
 font_scale: 1.45
-figsize: [9.5, 8]
+figsize: [11, 9]
 
-# Color scale bounds (null = auto)
-vmin: 0.0
-vmax: 0.6
+# Color scale bounds (null = auto). Matched to the data rather than to round
+# numbers: mean_r spans 0.107-0.547 across both the linear and the nonlinear
+# runs, so the old 0.0-0.6 window left ~30% of the ramp unused and squeezed
+# every cell into its middle third. Shared by all four heatmaps (linear and
+# nonlinear x both directions) so they stay comparable with each other.
+vmin: 0.10
+vmax: 0.55
 
 # Optional second results file → difference (e.g. nonlinear minus linear) heatmaps
 results_csv_2: null
@@ -68,6 +72,10 @@ label_2: "nonlinear"
 text_to_vision_diff_output: null
 vision_to_text_diff_output: null
 # Difference heatmaps are centered on 0 (white = no change). diff_vmax sets the
-# symmetric half-range, shared across both diff panels (-diff_vmax .. +diff_vmax);
-# null = auto (max |difference|, nothing clipped).
-diff_vmax: 0.1
+# symmetric half-range, shared across both diff panels (-diff_vmax .. +diff_vmax).
+# null = auto: the 98th percentile of |difference| across BOTH panels, so the
+# panels stay comparable and the ramp is spent on the range the data occupies.
+# Not the maximum: |diff| runs median 0.016 / p95 0.045 / max 0.225, so scaling
+# to the max washes the map out even worse than the old fixed 0.1 did. The few
+# cells beyond the limit clip, and the subtitle says how many.
+diff_vmax: null

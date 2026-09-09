@@ -31,15 +31,25 @@ from scipy.stats import wilcoxon
 from cross_modal_neural_encoding.config import FIGURES_DIR, PROJ_ROOT
 from cross_modal_neural_encoding.utils import (
     configure_plot_fonts,
-    short_model_label,
     significance_label,
+)
+from cross_modal_neural_encoding.visualization.visualize_encoding_results import (
+    MATRIX_FAMILY_DISPLAY,
+    model_family,
+    model_size,
 )
 
 configure_plot_fonts()
 
 
 def _pretty_label(label: str) -> str:
-    return short_model_label(label)
+    """``"Qwen--Qwen3.5-2B-Base"`` -> ``"Qwen3.5-VL 2B"``.
+
+    Same family and scale naming as the encoding figures, so a reader moving
+    between them sees one set of model names.
+    """
+    family = model_family(label)
+    return f"{MATRIX_FAMILY_DISPLAY.get(family, family)} {model_size(label)[1]}".strip()
 
 
 def _make_colormap(colors: list[str]) -> LinearSegmentedColormap:
@@ -73,21 +83,21 @@ def _plot_heatmap(
 
     ax.set_xticks(np.arange(len(col_labels)))
     ax.set_yticks(np.arange(len(row_labels)))
-    ax.set_xticklabels(col_labels, rotation=45, ha="right", fontsize=10 * font_scale)
-    ax.set_yticklabels(row_labels, fontsize=10 * font_scale)
+    ax.set_xticklabels(col_labels, rotation=45, ha="right", fontsize=13 * font_scale)
+    ax.set_yticklabels(row_labels, fontsize=13 * font_scale)
     mean_val = float(np.nanmean(data))
     subtitle = f"mean = {mean_val:.3f}"
     if comparison_note:
         subtitle += f"    |    {comparison_note}"
     # Wrap each title line so the title never spills past the figure width
     # (rather than letting bbox_inches="tight" widen the whole canvas).
-    title_font = 13 * font_scale
+    title_font = 14.5 * font_scale
     max_chars = max(20, int(figsize[0] * 72 / (0.55 * title_font)))
     title_lines = textwrap.fill(title, width=max_chars)
     subtitle_lines = textwrap.fill(subtitle, width=max_chars)
     ax.set_title(f"{title_lines}\n{subtitle_lines}", fontsize=title_font, pad=10)
-    ax.set_xlabel(xlabel, fontsize=11 * font_scale, labelpad=8)
-    ax.set_ylabel(ylabel, fontsize=11 * font_scale, labelpad=8)
+    ax.set_xlabel(xlabel, fontsize=14 * font_scale, labelpad=8)
+    ax.set_ylabel(ylabel, fontsize=14 * font_scale, labelpad=8)
 
     if annotate:
         for i in range(data.shape[0]):
@@ -100,13 +110,13 @@ def _plot_heatmap(
                         f"{val:.2f}",
                         ha="center",
                         va="center",
-                        fontsize=7 * font_scale,
+                        fontsize=9.5 * font_scale,
                         color="#1f2d3d",
                     )
 
     cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.ax.tick_params(labelsize=10 * font_scale)
-    cbar.set_label("Mean Pearson r", fontsize=11 * font_scale)
+    cbar.ax.tick_params(labelsize=13 * font_scale)
+    cbar.set_label("Mean Pearson r", fontsize=14 * font_scale)
 
     fig.tight_layout()
     # bbox_inches="tight" so the inline comparison note in the title is never
@@ -205,8 +215,8 @@ def _plot_single_results(
 
     # Color each panel by its input modality (text = blue, image = red), matching
     # the modality scheme used across the paper's figures.
-    pastel_blue = _make_colormap(["#F2F6FB", "#BBD4F0", "#6FA8DC"])
-    pastel_red = _make_colormap(["#FCF1F1", "#F2C2C2", "#E88989"])
+    pastel_blue = _make_colormap(["#EEF4FB", "#A8C8EA", "#5B93D1", "#2A6BB5"])
+    pastel_red = _make_colormap(["#FCF0EF", "#F0B2AD", "#DD7A73", "#BE3F37"])
 
     pivot_tv, pivot_vt = _create_pivot_matrices(df, text_order, vision_order)
 
@@ -264,15 +274,21 @@ def _plot_single_results(
         logger.warning("No vision_to_text rows found in results.")
 
 
-def _symmetric_limits(data: np.ndarray, half_range: float | None) -> tuple[float, float]:
+def _symmetric_limits(
+    data: np.ndarray, half_range: float | None, robust_percentile: float = 98.0
+) -> tuple[float, float]:
     """Color bounds centered on 0 so the diverging midpoint (white) maps to 0.
 
-    ``half_range`` caps the symmetric span; ``None`` uses max(|data|) so nothing clips.
+    ``half_range`` sets the symmetric span explicitly. ``None`` derives it from
+    the *robust_percentile* of |data| rather than its maximum: these differences
+    have a long tail (median 0.016, p95 0.045, max 0.225), and scaling to the
+    max leaves the ramp almost unused for the ~95% of cells that matter. A few
+    extreme cells clip instead, which the caller reports in the subtitle.
     """
     if half_range is not None:
         lim = float(half_range)
     else:
-        lim = float(np.nanmax(np.abs(data)))
+        lim = float(np.nanpercentile(np.abs(data), robust_percentile))
     if not np.isfinite(lim) or lim <= 0.0:
         lim = 1e-6
     return -lim, lim
@@ -295,14 +311,35 @@ def _plot_difference_results(
 
     # Colorblind-safe diverging map (amber ↔ purple) for the nonlinear − linear
     # difference; avoids the red↔green pair and the categorical modality hues.
-    diverging_cmap = _make_colormap(["#E8A24C", "#F4F4F4", "#A988C8"])
+    diverging_cmap = _make_colormap(
+        ["#B86D0E", "#E8A24C", "#F6F6F6", "#A988C8", "#7048A4"]
+    )
 
     pivot1_tv, pivot1_vt = _create_pivot_matrices(df1, text_order, vision_order)
     pivot2_tv, pivot2_vt = _create_pivot_matrices(df2, text_order, vision_order)
 
-    if pivot1_tv is not None and pivot2_tv is not None:
-        diff_tv = pivot2_tv.values - pivot1_tv.values
-        vmin_tv, vmax_tv = _symmetric_limits(diff_tv, diff_vmax)
+    have_tv = pivot1_tv is not None and pivot2_tv is not None
+    have_vt = pivot1_vt is not None and pivot2_vt is not None
+    diff_tv = pivot2_tv.values - pivot1_tv.values if have_tv else None
+    diff_vt = pivot2_vt.values - pivot1_vt.values if have_vt else None
+
+    # One symmetric scale across both directions: computed per panel, the two
+    # diff heatmaps would use different colour scales and could not be compared
+    # with each other, which is the whole point of showing them side by side.
+    present = [d for d in (diff_tv, diff_vt) if d is not None]
+    if not present:
+        logger.warning("Cannot compute either difference (missing data in one or both files).")
+        return
+    all_diffs = np.concatenate([d.ravel() for d in present])
+    vmin_diff, vmax_diff = _symmetric_limits(all_diffs, diff_vmax)
+    n_clipped = int(np.sum(np.abs(all_diffs) > vmax_diff))
+    clip_note = (
+        f"colour scale ±{vmax_diff:.3f}; {n_clipped}/{all_diffs.size} cells clipped"
+        if n_clipped
+        else None
+    )
+
+    if diff_tv is not None:
         row_labels = [_pretty_label(x) for x in pivot2_tv.index.tolist()]
         col_labels = [_pretty_label(x) for x in pivot2_tv.columns.tolist()]
         output_path = _resolve_output_path(
@@ -315,12 +352,13 @@ def _plot_difference_results(
             row_labels,
             col_labels,
             title=f"Text → Vision: {label2} minus {label1}",
+            comparison_note=clip_note,
             xlabel="Output (vision encoders)",
             ylabel="Input (text encoders)",
             cmap=diverging_cmap,
             output_path=output_path,
-            vmin=vmin_tv,
-            vmax=vmax_tv,
+            vmin=vmin_diff,
+            vmax=vmax_diff,
             annotate=annotate,
             font_scale=font_scale,
             figsize=figsize,
@@ -330,9 +368,7 @@ def _plot_difference_results(
             "Cannot compute text_to_vision difference (missing data in one or both files)."
         )
 
-    if pivot1_vt is not None and pivot2_vt is not None:
-        diff_vt = pivot2_vt.values - pivot1_vt.values
-        vmin_vt, vmax_vt = _symmetric_limits(diff_vt, diff_vmax)
+    if diff_vt is not None:
         row_labels = [_pretty_label(x) for x in pivot2_vt.index.tolist()]
         col_labels = [_pretty_label(x) for x in pivot2_vt.columns.tolist()]
         output_path = _resolve_output_path(
@@ -345,12 +381,13 @@ def _plot_difference_results(
             row_labels,
             col_labels,
             title=f"Vision → Text: {label2} minus {label1}",
+            comparison_note=clip_note,
             xlabel="Output (text encoders)",
             ylabel="Input (vision encoders)",
             cmap=diverging_cmap,
             output_path=output_path,
-            vmin=vmin_vt,
-            vmax=vmax_vt,
+            vmin=vmin_diff,
+            vmax=vmax_diff,
             annotate=annotate,
             font_scale=font_scale,
             figsize=figsize,
