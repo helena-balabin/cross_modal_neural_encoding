@@ -187,12 +187,40 @@ COLD_SUBJECT_PALETTE = [
     "#A3D2E2",  # cold pastel aqua
 ]
 
+# ── Per-bar significance markers ────────────────────────────────────────────
+# There is one of these above every bar, so their styling sets how much of a
+# dense panel is stars rather than data: at the pairwise brackets' size and
+# dark red they read as the most prominent thing in the figure. Small, tightly
+# stacked and grey keeps them legible as an annotation without competing.
+#
+# The pairwise brackets *between* groups keep the larger dark-red styling —
+# there are only a handful of them and they carry a different test, so their
+# prominence is proportionate.
+BAR_SIG_COLOR = "#6E6E6E"
+BAR_SIG_PT = 8.5  # multiplied by the figure's font_scale
+# Tight enough that a stacked "***" reads as one mark rather than three.
+BAR_SIG_LINESPACING = 0.42
+
 configure_plot_fonts()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+def stacked_bar_marker(sig: str) -> str:
+    """Stack a run of asterisks one per line, for a marker drawn over a bar.
+
+    Stacking (rather than rotating the string 90°) keeps every glyph centred on
+    its bar — a rotated "***" lands off-centre, because the asterisk sits high
+    in its character cell. Doing it for "**" as well as "***" makes every marker
+    exactly one glyph wide, so no marker can overhang into a neighbouring bar
+    and the whole row of them reads at a single width.
+
+    ``"ns"`` is left horizontal: stacked letters stop reading as a word.
+    """
+    return "\n".join(sig) if set(sig) == {"*"} else sig
 
 
 def _legend_ncol(
@@ -894,12 +922,12 @@ def _plot_model_row(
         ax.text(
             i,
             y_pos,
-            sig,
+            stacked_bar_marker(sig),
             ha="center",
             va="bottom",
-            fontsize=12 * font_scale,
-            fontweight="bold",
-            color="black" if sig == "ns" else "darkred",
+            linespacing=BAR_SIG_LINESPACING,
+            fontsize=BAR_SIG_PT * font_scale,
+            color=BAR_SIG_COLOR,
         )
 
     # ── Axes formatting ───────────────────────────────────────────────────
@@ -1021,12 +1049,12 @@ def _plot_model_row(
                     ax_subject.text(
                         xj,
                         y_sig,
-                        sig,
+                        stacked_bar_marker(sig),
                         ha="center",
                         va=va,
-                        fontsize=8 * font_scale,
-                        rotation=90,
-                        color="black" if sig == "ns" else "darkred",
+                        linespacing=BAR_SIG_LINESPACING,
+                        fontsize=BAR_SIG_PT * font_scale,
+                        color=BAR_SIG_COLOR,
                         zorder=5,
                     )
 
@@ -1318,19 +1346,15 @@ def plot_grouped_model_means(
             pad = 0.015 * (y_max - y_min)
             y_sig = hj + (err + pad if hj >= 0 else -(err + pad))
             va = "bottom" if hj >= 0 else "top"
-            # Stack the significance characters vertically with newlines (rather
-            # than rotating the string 90°) so each glyph stays horizontally
-            # centred on the bar — a rotated "***" lands off-centre because the
-            # asterisk sits high in its character cell.
             ax.text(
                 xj,
                 y_sig,
-                "\n".join(sig),
+                stacked_bar_marker(sig),
                 ha="center",
                 va=va,
-                linespacing=0.6,
-                fontsize=10.0 * font_scale,
-                color="black" if sig == "ns" else "darkred",
+                linespacing=BAR_SIG_LINESPACING,
+                fontsize=BAR_SIG_PT * font_scale,
+                color=BAR_SIG_COLOR,
                 zorder=5,
             )
 
@@ -1611,10 +1635,10 @@ def _draw_matrix_panel(
         zorder=3,
     )
 
-    # Per-bar significance vs. chance. Drawn horizontally where a bar is wide
-    # enough for "***" at full size, and stacked vertically where it is not —
-    # a horizontal string that overflows its bar collides with its neighbours.
-    star_pt = 12.0 * font_scale
+    # Per-bar significance vs. chance. Always stacked (see stacked_bar_marker),
+    # so it no longer matters whether a bar is wide enough for the horizontal
+    # string — every marker is one glyph wide at any panel width.
+    star_pt = BAR_SIG_PT * font_scale
     y_min, y_max = ax.get_ylim()
     pad = 0.018 * (y_max - y_min)
     for pos, height, err, member in zip(positions, heights, errors, members):
@@ -1628,12 +1652,12 @@ def _draw_matrix_panel(
         ax.text(
             pos,
             top + (pad if height >= 0 else -pad),
-            "\n".join(sig) if 0.62 * star_pt * len(sig) > unit_pt else sig,
+            stacked_bar_marker(sig),
             ha="center",
             va="bottom" if height >= 0 else "top",
-            linespacing=0.62,
+            linespacing=BAR_SIG_LINESPACING,
             fontsize=star_pt,
-            color="black" if sig == "ns" else "darkred",
+            color=BAR_SIG_COLOR,
             zorder=5,
         )
 
@@ -1896,6 +1920,10 @@ def plot_condition_matrix(
     condition comparisons become the connectors between panels instead of six
     brackets stacked above the bars, which frees the vertical range those
     brackets used to reserve.
+
+    Explicit ``y_limits`` are applied exactly, so two figures given the same
+    limits and ``figsize`` share one scale. When left ``None`` the range is fit
+    to the data and then grown to leave room for the significance stars.
     """
     conditions = _condition_order_from_index(
         {c for item in model_results for c in item["aggregated_df"].index}
@@ -1922,6 +1950,7 @@ def plot_condition_matrix(
     )
     pair_qvalues = pairwise_condition_signrank(values, correction=group_sig_correction)
 
+    explicit_y_limits = y_limits is not None
     if y_limits is None:
         finite = np.isfinite(values)
         if not np.any(finite):
@@ -2011,10 +2040,10 @@ def plot_condition_matrix(
         for condition_index in panel_of_condition
     }
 
-    # Where a bar is too narrow for a horizontal "***" the stars stack, and the
-    # stack needs clear space above the tallest bar or it runs into the family
-    # labels. Convert that requirement from points into data units: to leave a
-    # fraction f of the panel height clear, the span has to grow by f*span/(1-f).
+    # The stars always stack now, and the stack needs clear space above the
+    # tallest bar or it runs into the family labels. Convert that requirement
+    # from points into data units: to leave a fraction f of the panel height
+    # clear, the span has to grow by f*span/(1-f).
     panel_box = axes[0][0].get_position()
     panel_pt = panel_box.height * figsize[1] * 72.0
     panel_w_pt = panel_box.width * figsize[0] * 72.0
@@ -2025,11 +2054,11 @@ def plot_condition_matrix(
         return panel_w_pt / (len(members) + BLOCK_GAP * (n_blocks - 1) + 1.8)
 
     unit_pt = min(_unit_pt(members) for members in panel_members.values())
-    star_pt = 12.0 * font_scale
-    stacked = 0.62 * star_pt * 3 > unit_pt
-    star_pt_h = (3 * star_pt * 0.62 if stacked else star_pt) + 8.0
+    star_pt = BAR_SIG_PT * font_scale
+    # Three stacked glyphs ("***" is the tallest marker), plus a fixed gap.
+    star_pt_h = 3 * star_pt * BAR_SIG_LINESPACING + 8.0
     headroom = star_pt_h / panel_pt
-    if 0.0 < headroom < 0.5:
+    if not explicit_y_limits and 0.0 < headroom < 0.5:
         span = y_limits[1] - y_limits[0]
         grow = headroom * span / (1.0 - headroom)
         # Bars below zero carry their stars underneath, so they need the same
@@ -2428,11 +2457,12 @@ def plot_subject_mean_across_models(
             ax.text(
                 xj,
                 y_sig,
-                sig,
+                stacked_bar_marker(sig),
                 ha="center",
                 va=va,
-                fontsize=8.5 * font_scale,
-                color="black" if sig == "ns" else "darkred",
+                linespacing=BAR_SIG_LINESPACING,
+                fontsize=BAR_SIG_PT * font_scale,
+                color=BAR_SIG_COLOR,
                 zorder=5,
             )
 

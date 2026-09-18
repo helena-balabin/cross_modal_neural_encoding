@@ -26,8 +26,10 @@ output_dir: "reports/figures/residual_encoding"
 # fMRI modality, with the six pairwise condition comparisons as connectors in
 # the gutters between panels rather than brackets stacked above the bars.
 plot_condition_matrix: true
-condition_matrix_figsize: [15.0, 8.8]
-condition_matrix_font_scale: 1.45
-# null = auto-scale to the data, shared across all four panels. Residualized
-# accuracies go negative, so the range is not anchored at zero.
-condition_matrix_y_limits: null
+# Size, font scale and y-range match the standard encoding matrix
+# (visualize_encoding_results.yaml) so the two figures share one scale. The
+# range is applied exactly; its bottom leaves room for negative residualized
+# bars and the stars beneath them. null = auto-scale to the data.
+condition_matrix_figsize: [17.0, 9.2]
+condition_matrix_font_scale: 1.55
+condition_matrix_y_limits: [-0.04, 0.145]

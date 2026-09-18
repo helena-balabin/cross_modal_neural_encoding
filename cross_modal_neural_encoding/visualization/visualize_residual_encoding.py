@@ -42,6 +42,9 @@ from cross_modal_neural_encoding.utils import (
     significance_label,
 )
 from cross_modal_neural_encoding.visualization.visualize_encoding_results import (
+    BAR_SIG_COLOR,
+    BAR_SIG_LINESPACING,
+    BAR_SIG_PT,
     VLM_MODEL_PALETTE,
     _collect_model_dirs,
     _model_category_rank,
@@ -52,6 +55,7 @@ from cross_modal_neural_encoding.visualization.visualize_encoding_results import
     pairwise_condition_signrank,
     plot_condition_matrix,
     plot_grouped_model_means,
+    stacked_bar_marker,
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -341,8 +345,9 @@ def plot_combined_delta(
                 y, va = val - sem - star_off, "top"
                 lowest = min(lowest, y - star_off)
             ax.text(
-                x[j] + offsets[i], y, sig, ha="center", va=va,
-                fontsize=6.5 * font_scale, color="darkred", zorder=5,
+                x[j] + offsets[i], y, stacked_bar_marker(sig), ha="center", va=va,
+                linespacing=BAR_SIG_LINESPACING,
+                fontsize=BAR_SIG_PT * font_scale, color=BAR_SIG_COLOR, zorder=5,
             )
     ax.set_ylim(bottom=min(ax.get_ylim()[0], lowest))
 
@@ -517,7 +522,9 @@ def main(cfg: DictConfig) -> None:
                 if matrix_y_cfg is not None
                 else None
             ),
-            title=f"{title_prefix}\nResidual encoding accuracy (group means)",
+            # One line, like the standard matrix: a second title line shrinks
+            # the panels, and with them the y-scale the two figures share.
+            title=title_prefix,
             show_error_bars=True,
             row_labels=matrix_rows,
             col_labels=matrix_cols,
