@@ -1,0 +1,30 @@
+# ──────────────────────────────────────────────────────────────
+# Configuration for the ridge-alpha robustness check (appendix)
+# See: cross_modal_neural_encoding/visualization/visualize_ridge_alpha_robustness.py
+# ──────────────────────────────────────────────────────────────
+
+# Inherit model ordering, fonts and figure size from the main heatmap config.
+defaults:
+  - visualize_predict_modalities
+  - _self_
+
+# Fixed alpha=1.0 run (regressor=ridge) and nested-CV run (regressor=ridge_cv)
+fixed_results_csv: "outputs/predict_modalities/linear/predict_modalities_results.csv"
+tuned_results_csv: "outputs/predict_modalities/ridge_cv/predict_modalities_results.csv"
+
+output_dir: "reports/figures/predict_modalities/ridge_alpha_robustness"
+
+# Must match ridge_cv.alphas in configs/modeling/predict_modalities.yaml; used for
+# the alpha colour scale and to count folds whose selection hit a grid edge.
+alpha_grid: [1.0e-3, 1.0e-2, 1.0e-1, 1.0, 1.0e1, 1.0e2, 1.0e3, 1.0e4, 1.0e5, 1.0e6]
+
+# Annotate the alpha heatmaps with log10(alpha)
+annotate: true
+
+# ── Styling for the ridge-alpha (nested-CV) figures only ──────
+# 1.5x the main heatmaps' type (font_scale 1.45 there). The canvas grows with it
+# so the 45° column labels stay narrower than their columns and each row stays
+# taller than its label. vmax clears the tuned run's maximum (0.552).
+font_scale: 2.175
+figsize: [16, 13]
+vmax: 0.56

@@ -45,8 +45,8 @@ vision_layer: 6
 # ── Prediction setup ─────────────────────────────────────────
 # 5-fold CV with configurable regressor and Pearson r evaluation.
 n_splits: 5
-regressor: "mlp_relu"  # ridge | mlp_linear | mlp_relu
-ridge_alpha: 1.0
+regressor: "mlp_relu"  # ridge | ridge_cv | mlp_linear | mlp_relu
+ridge_alpha: 1.0  # fixed alpha for regressor=ridge
 random_state: 42
 standardize: true
 min_samples: 5
@@ -57,6 +57,15 @@ min_samples: 5
 # num_shards=1 disables sharding (single full run).
 num_shards: 1
 shard_index: 0
+
+# ── Nested ridge (regressor=ridge_cv) ────────────────────────
+# Alpha is selected per outer fold by inner 5-fold CV on the training fold only
+# (score: mean column-wise Pearson r), then refit on the full training fold.
+# Each direction and pair is tuned independently. Grid: 10 powers of ten, 10^-3 .. 10^6.
+ridge_cv:
+  alphas: [1.0e-3, 1.0e-2, 1.0e-1, 1.0, 1.0e1, 1.0e2, 1.0e3, 1.0e4, 1.0e5, 1.0e6]
+  inner_splits: 5
+  device: "cuda"
 
 # ── MLP settings (skip-connected, 4-layer MLP) ───────────────
 mlp:

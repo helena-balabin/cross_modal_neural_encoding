@@ -1,0 +1,13 @@
+statistic,value
+text_to_vision: mean r fixed / tuned / tuned-fixed,0.4459 / 0.4692 / +0.0234
+text_to_vision: max |tuned-fixed|,0.0580
+"text_to_vision: selected alpha median [min, max]","10000 [1000, 100000]"
+text_to_vision: folds at grid edge,0/980
+vision_to_text: mean r fixed / tuned / tuned-fixed,0.3675 / 0.3778 / +0.0103
+vision_to_text: max |tuned-fixed|,0.0218
+"vision_to_text: selected alpha median [min, max]","10000 [1000, 10000]"
+vision_to_text: folds at grid edge,0/980
+"fixed: mean gap r(T→V) − r(V→T), pairs with T→V higher, paired Wilcoxon p","+0.0784, 173/196, 1.4e-30"
+"tuned: mean gap r(T→V) − r(V→T), pairs with T→V higher, paired Wilcoxon p","+0.0915, 185/196, 9.8e-33"
+gap sign agreement fixed vs tuned,184/196
+gap Spearman rho fixed vs tuned,0.964

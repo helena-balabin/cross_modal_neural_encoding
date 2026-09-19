@@ -77,6 +77,8 @@ def _plot_heatmap(
     font_scale: float,
     figsize: tuple[float, float],
     comparison_note: str | None = None,
+    cbar_label: str = "Mean Pearson r",
+    value_fmt: str = ".2f",
 ) -> None:
     fig, ax = plt.subplots(figsize=figsize)
     im = ax.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto")
@@ -107,7 +109,7 @@ def _plot_heatmap(
                     ax.text(
                         j,
                         i,
-                        f"{val:.2f}",
+                        f"{val:{value_fmt}}",
                         ha="center",
                         va="center",
                         fontsize=9.5 * font_scale,
@@ -116,7 +118,7 @@ def _plot_heatmap(
 
     cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     cbar.ax.tick_params(labelsize=13 * font_scale)
-    cbar.set_label("Mean Pearson r", fontsize=14 * font_scale)
+    cbar.set_label(cbar_label, fontsize=14 * font_scale)
 
     fig.tight_layout()
     # bbox_inches="tight" so the inline comparison note in the title is never
@@ -194,7 +196,7 @@ def _direction_comparison_note(
         return None
     p = float(cast(float, result[1]))
     sig = significance_label(p)
-    return f"Text → Vision vs Vision → Text (paired Wilcoxon): p = {p:.2g} {sig}"
+    return f"direction difference: p = {p:.2g} {sig} (paired Wilcoxon)"
 
 
 def _plot_single_results(
@@ -211,7 +213,7 @@ def _plot_single_results(
     vmax = cfg.get("vmax")
     # Linear (ridge) vs nonlinear (MLP), inferred from the results' regressor column.
     regressor = str(df["regressor"].iloc[0]) if "regressor" in df.columns and len(df) else ""
-    setting = "Linear" if regressor == "ridge" else "Nonlinear"
+    setting = "Linear" if regressor.startswith("ridge") else "Nonlinear"
 
     # Color each panel by its input modality (text = blue, image = red), matching
     # the modality scheme used across the paper's figures.
@@ -233,7 +235,7 @@ def _plot_single_results(
             pivot_tv.values,
             row_labels,
             col_labels,
-            title=f"{setting}: Text → Vision prediction (mean Pearson r)",
+            title=f"{setting}: Text → Vision prediction",
             xlabel="Output (vision encoders)",
             ylabel="Input (text encoders)",
             cmap=pastel_blue,
@@ -258,7 +260,7 @@ def _plot_single_results(
             pivot_vt.values,
             row_labels,
             col_labels,
-            title=f"{setting}: Vision → Text prediction (mean Pearson r)",
+            title=f"{setting}: Vision → Text prediction",
             xlabel="Output (text encoders)",
             ylabel="Input (vision encoders)",
             cmap=pastel_red,
@@ -334,7 +336,7 @@ def _plot_difference_results(
     vmin_diff, vmax_diff = _symmetric_limits(all_diffs, diff_vmax)
     n_clipped = int(np.sum(np.abs(all_diffs) > vmax_diff))
     clip_note = (
-        f"colour scale ±{vmax_diff:.3f}; {n_clipped}/{all_diffs.size} cells clipped"
+        f"scale ±{vmax_diff:.3f}, {n_clipped}/{all_diffs.size} cells clipped"
         if n_clipped
         else None
     )

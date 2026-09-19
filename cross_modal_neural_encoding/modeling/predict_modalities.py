@@ -1,8 +1,8 @@
 """Predict embeddings across modalities (text ↔ vision).
 
-This script fits linear models to predict image-encoder embeddings from
-text-encoder embeddings and vice versa, using 5-fold cross-validation
-and Pearson correlation as the evaluation metric.
+This script fits ridge (fixed or nested-CV-tuned alpha) or MLP models to
+predict image-encoder embeddings from text-encoder embeddings and vice versa,
+using 5-fold cross-validation and Pearson correlation as the evaluation metric.
 
 Usage
 -----
@@ -359,6 +359,85 @@ def _train_mlp_fold(
         return model(X_test_t).cpu().numpy()
 
 
+class _RidgeEigen:
+    """Multi-output ridge solved via one eigendecomposition of X^T X.
+
+    After the single ``eigh``, the solution for any alpha costs only a
+    p x k rescale, so a whole alpha grid can be evaluated at the price of one
+    fit. Matches ``sklearn.linear_model.Ridge(fit_intercept=True)``: X and Y are
+    centered on the training data and the means form the intercept.
+    """
+
+    def __init__(self, X: torch.Tensor, Y: torch.Tensor) -> None:
+        self.x_mean = X.mean(dim=0, keepdim=True)
+        self.y_mean = Y.mean(dim=0, keepdim=True)
+        Xc = X - self.x_mean
+        Yc = Y - self.y_mean
+        self.evals, self.evecs = torch.linalg.eigh(Xc.T @ Xc)
+        # Tiny negative eigenvalues are round-off on a PSD Gram matrix.
+        self.evals = self.evals.clamp_min(0.0)
+        self.rot_xty = self.evecs.T @ (Xc.T @ Yc)
+
+    def predict(self, X: torch.Tensor, alpha: float) -> torch.Tensor:
+        W = self.evecs @ (self.rot_xty / (self.evals + alpha).unsqueeze(1))
+        return (X - self.x_mean) @ W + self.y_mean
+
+
+def _pearson_r_columns_torch(y_true: torch.Tensor, y_pred: torch.Tensor) -> torch.Tensor:
+    y_true = y_true - y_true.mean(dim=0, keepdim=True)
+    y_pred = y_pred - y_pred.mean(dim=0, keepdim=True)
+    num = (y_true * y_pred).sum(dim=0)
+    den = torch.sqrt((y_true**2).sum(dim=0) * (y_pred**2).sum(dim=0))
+    return num / den.where(den > 0, torch.full_like(den, float("nan")))
+
+
+def _fit_ridge_cv_fold(
+    X_train: np.ndarray,
+    Y_train: np.ndarray,
+    X_test: np.ndarray,
+    *,
+    alphas: list[float],
+    inner_splits: int,
+    random_state: int,
+    device: str,
+) -> tuple[np.ndarray, float, np.ndarray]:
+    """Nested ridge: select alpha by inner K-fold CV on the training fold only.
+
+    The selection score is the mean column-wise Pearson r on the inner
+    validation splits (the same metric as the outer evaluation). The model is
+    then refit on the full training fold with the selected alpha. The outer
+    test fold is never seen during selection.
+
+    Returns (test predictions, selected alpha, mean inner score per alpha).
+    """
+    if device == "cuda" and not torch.cuda.is_available():
+        device = "cpu"
+    device_t = torch.device(device)
+    # float64: the Gram matrix of 4096-d embeddings is ill-conditioned at small alpha.
+    X_tr = torch.tensor(X_train, dtype=torch.float64, device=device_t)
+    Y_tr = torch.tensor(Y_train, dtype=torch.float64, device=device_t)
+
+    inner_scores = np.zeros((inner_splits, len(alphas)))
+    inner_kf = KFold(n_splits=inner_splits, shuffle=True, random_state=random_state)
+    for i, (fit_idx, val_idx) in enumerate(inner_kf.split(X_train)):
+        fit_t = torch.as_tensor(fit_idx, device=device_t)
+        val_t = torch.as_tensor(val_idx, device=device_t)
+        solver = _RidgeEigen(X_tr[fit_t], Y_tr[fit_t])
+        X_val, Y_val = X_tr[val_t], Y_tr[val_t]
+        for j, alpha in enumerate(alphas):
+            r = _pearson_r_columns_torch(Y_val, solver.predict(X_val, alpha))
+            inner_scores[i, j] = float(torch.nanmean(r).item())
+        del solver
+
+    mean_scores = inner_scores.mean(axis=0)
+    best_alpha = float(alphas[int(np.nanargmax(mean_scores))])
+
+    solver = _RidgeEigen(X_tr, Y_tr)
+    X_te = torch.tensor(X_test, dtype=torch.float64, device=device_t)
+    Y_pred = solver.predict(X_te, best_alpha).cpu().numpy()
+    return Y_pred, best_alpha, mean_scores
+
+
 def _evaluate_cv(
     X: np.ndarray,
     Y: np.ndarray,
@@ -369,9 +448,17 @@ def _evaluate_cv(
     standardize: bool,
     regressor: str,
     mlp_config: dict,
-) -> tuple[float, float, list[float]]:
+    ridge_cv_config: dict | None = None,
+) -> tuple[float, float, list[float], list[float]]:
+    """Outer K-fold CV. Returns (mean r, std r, per-fold r, per-fold alpha).
+
+    Per-fold alpha is the selected alpha for ``ridge_cv``, the fixed
+    ``ridge_alpha`` for ``ridge``, and empty for the MLP regressors.
+    """
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
     fold_scores: list[float] = []
+    fold_alphas: list[float] = []
+    ridge_cv_config = ridge_cv_config or {}
 
     for fold_idx, (train_idx, test_idx) in enumerate(kf.split(X), start=1):
         logger.info(f"  Fold {fold_idx}/{n_splits}: train={len(train_idx)} test={len(test_idx)}")
@@ -392,6 +479,34 @@ def _evaluate_cv(
             model = Ridge(alpha=ridge_alpha)
             model.fit(X_train, Y_train)
             Y_pred = model.predict(X_test)
+            fold_alphas.append(ridge_alpha)
+
+            if standardize:
+                Y_pred = y_scaler.inverse_transform(Y_pred)
+                Y_test_eval = y_scaler.inverse_transform(Y_test_scaled)
+            else:
+                Y_test_eval = Y_test
+
+            r = _pearson_r_columns(Y_test_eval, Y_pred)
+        elif regressor == "ridge_cv":
+            alphas = [float(a) for a in ridge_cv_config.get("alphas", [])]
+            if not alphas:
+                raise ValueError("regressor=ridge_cv requires a non-empty ridge_cv.alphas grid.")
+            Y_pred, best_alpha, inner_scores = _fit_ridge_cv_fold(
+                X_train,
+                Y_train,
+                X_test,
+                alphas=alphas,
+                inner_splits=int(ridge_cv_config.get("inner_splits", 5)),
+                random_state=random_state,
+                device=str(ridge_cv_config.get("device", "cuda")).lower(),
+            )
+            fold_alphas.append(best_alpha)
+            edge = " (grid edge!)" if best_alpha in (min(alphas), max(alphas)) else ""
+            logger.info(
+                f"    selected alpha={best_alpha:g}{edge} "
+                f"(inner r={np.nanmax(inner_scores):.4f})"
+            )
 
             if standardize:
                 Y_pred = y_scaler.inverse_transform(Y_pred)
@@ -422,7 +537,7 @@ def _evaluate_cv(
 
     mean_r = float(np.nanmean(fold_scores))
     std_r = float(np.nanstd(fold_scores))
-    return mean_r, std_r, fold_scores
+    return mean_r, std_r, fold_scores, fold_alphas
 
 
 def _load_vg_coco_pairs(
@@ -796,6 +911,7 @@ def main(cfg: DictConfig) -> None:
     standardize = bool(cfg.get("standardize", True))
     min_samples = int(cfg.get("min_samples", n_splits))
     mlp_config = dict(cfg.get("mlp", {}))
+    ridge_cv_config = dict(cfg.get("ridge_cv", {}))
 
     # Optional pair sharding for SLURM-array parallelism. Each shard processes a
     # round-robin slice of the (text x vision) pairs and writes its own CSV; a
@@ -837,7 +953,7 @@ def main(cfg: DictConfig) -> None:
             X_text = text_bundle.embeddings[[text_lookup[int(cid)] for cid in common_ids]]
             Y_vision = vision_bundle.embeddings[[vision_lookup[int(cid)] for cid in common_ids]]
 
-            mean_r, std_r, fold_scores = _evaluate_cv(
+            mean_r, std_r, fold_scores, fold_alphas = _evaluate_cv(
                 X_text,
                 Y_vision,
                 n_splits=n_splits,
@@ -846,6 +962,7 @@ def main(cfg: DictConfig) -> None:
                 standardize=standardize,
                 regressor=regressor,
                 mlp_config=mlp_config,
+                ridge_cv_config=ridge_cv_config,
             )
             logger.info(f"  text→vision mean r = {mean_r:.4f} (std {std_r:.4f})")
 
@@ -866,9 +983,13 @@ def main(cfg: DictConfig) -> None:
             }
             for i, score in enumerate(fold_scores):
                 record[f"fold_{i}"] = score
+            for i, alpha in enumerate(fold_alphas):
+                record[f"alpha_fold_{i}"] = alpha
+            if fold_alphas:
+                record["alpha_median"] = float(np.median(fold_alphas))
             records.append(record)
 
-            mean_r, std_r, fold_scores = _evaluate_cv(
+            mean_r, std_r, fold_scores, fold_alphas = _evaluate_cv(
                 Y_vision,
                 X_text,
                 n_splits=n_splits,
@@ -877,6 +998,7 @@ def main(cfg: DictConfig) -> None:
                 standardize=standardize,
                 regressor=regressor,
                 mlp_config=mlp_config,
+                ridge_cv_config=ridge_cv_config,
             )
             logger.info(f"  vision→text mean r = {mean_r:.4f} (std {std_r:.4f})")
 
@@ -897,6 +1019,10 @@ def main(cfg: DictConfig) -> None:
             }
             for i, score in enumerate(fold_scores):
                 record[f"fold_{i}"] = score
+            for i, alpha in enumerate(fold_alphas):
+                record[f"alpha_fold_{i}"] = alpha
+            if fold_alphas:
+                record["alpha_median"] = float(np.median(fold_alphas))
             records.append(record)
 
             # Incremental write so a preempted/killed run keeps its progress.
